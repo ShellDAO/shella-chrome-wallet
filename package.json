@@ -1,0 +1,28 @@
+{
+  "name": "shella-chrome-wallet",
+  "version": "0.1.0",
+  "description": "Post-quantum Chrome wallet extension for Shell Chain",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/bundle.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["shell-chain", "wallet", "chrome-extension", "pq", "web3"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LucienSong/shella-chrome-wallet.git"
+  },
+  "dependencies": {
+    "shell-sdk": "github:LucienSong/shell-sdk",
+    "viem": "^2.39.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.325",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
