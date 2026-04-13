@@ -48,7 +48,6 @@ let currentSigner: ShellSigner | null = null;
 chrome.runtime.onInstalled.addListener(async () => {
   await initStore();
   await pollPendingTransactions();
-  console.warn('[Shella] wallet installed');
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -71,8 +70,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   handleMessage(msg as { type: string; [key: string]: unknown })
     .then(sendResponse)
     .catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      sendResponse({ ok: false, error: message });
+      sendResponse({ ok: false, error: toSafeErrorMessage(err) });
     });
   return true;
 });
@@ -552,4 +550,34 @@ function formatEther(wei: bigint): string {
 function parseEtherValue(value: string): bigint {
   if (value.startsWith('0x')) return BigInt(value);
   return parseEther(value as `${number}`);
+}
+
+function toSafeErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : 'Wallet operation failed';
+
+  if (
+    message === 'Password must be at least 8 characters' ||
+    message === 'Incorrect password or corrupted keystore' ||
+    message === 'Public key mismatch — wrong password or corrupt keystore' ||
+    message === 'Keystore JSON is invalid' ||
+    message === 'Keystore payload must be a JSON object' ||
+    message.startsWith('Keystore is missing required field:') ||
+    message === 'No wallet found' ||
+    message === 'No wallet to export' ||
+    message === 'Wallet is locked' ||
+    message === 'Recipient address is required' ||
+    message === 'Recipient must be a pq1… or 0x… address' ||
+    message === 'Calldata must be an even-length 0x-prefixed hex string' ||
+    message === 'Network payload is invalid' ||
+    message.endsWith('is required') ||
+    message.endsWith('must be a valid number')
+  ) {
+    return message;
+  }
+
+  if (message.startsWith('rpc request failed:') || message.startsWith('[')) {
+    return 'RPC request failed. Check network settings and try again.';
+  }
+
+  return 'Wallet operation failed.';
 }

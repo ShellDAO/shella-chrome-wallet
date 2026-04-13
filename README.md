@@ -6,7 +6,7 @@ Post-quantum Chrome wallet extension for [Shell Chain](https://github.com/Lucien
 
 - 🔐 **ML-DSA-65 key management** — generate or import post-quantum keypairs; addresses in `pq1...` bech32m format
 - 🔑 **Password-protected keystore** — argon2id KDF + xchacha20-poly1305 encryption; compatible with Shell CLI keystore format
-- 🔒 **Auto-lock** — configurable inactivity timeout via chrome.alarms; keys kept only in `chrome.storage.session`
+- 🔒 **Auto-lock** — configurable inactivity timeout via chrome.alarms; unlocked signer stays only in service-worker memory and browser restart re-locks the wallet
 - 💸 **Send transactions** — input recipient + amount → build → sign → broadcast via shell-sdk
 - 📥 **Receive** — display full address with one-click copy
 - 📜 **Transaction history** — query `shell_getTransactionsByAddress` and display recent activity
@@ -16,7 +16,7 @@ Post-quantum Chrome wallet extension for [Shell Chain](https://github.com/Lucien
 ## Project Structure
 
 ```
-manifest.json          MV3 manifest (permissions: storage, alarms)
+manifest.json          MV3 manifest (minimal permissions: storage, alarms)
 popup.html             Extension popup shell (360×600)
 popup.css              Dark-theme styles
 icons/                 Extension icons (16, 48, 128px)
@@ -43,6 +43,7 @@ npm run lint         # eslint src/
 Load the project root as an **unpacked extension** in `chrome://extensions` (enable Developer mode).
 
 > **Note:** `dist/background.js` is ~3.7 MB due to bundled ML-DSA-65 + Argon2id crypto. This is expected.
+> **Security note:** no host permissions are requested; the extension only needs `storage` and `alarms`.
 
 ## Dependencies
 

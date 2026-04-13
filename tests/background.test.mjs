@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 function createStorageArea() {
@@ -42,6 +43,8 @@ const listeners = {
   onAlarm: [],
 };
 let txCounter = 0;
+const createdAlarms = [];
+const clearedAlarms = [];
 
 globalThis.chrome = {
   runtime: {
@@ -50,8 +53,12 @@ globalThis.chrome = {
     onMessage: { addListener(fn) { listeners.onMessage.push(fn); } },
   },
   alarms: {
-    create() {},
-    clear() {},
+    create(name, options) {
+      createdAlarms.push({ name, options });
+    },
+    clear(name) {
+      clearedAlarms.push(name);
+    },
     onAlarm: { addListener(fn) { listeners.onAlarm.push(fn); } },
   },
   storage: {
@@ -90,8 +97,20 @@ globalThis.fetch = async (url, init) => {
 
 const { handleMessage } = await import('../dist/background.js');
 
+function resetAlarmState() {
+  createdAlarms.length = 0;
+  clearedAlarms.length = 0;
+}
+
+function dispatchRuntimeMessage(message) {
+  return new Promise((resolve) => {
+    listeners.onMessage[0](message, undefined, resolve);
+  });
+}
+
 test('create wallet -> snapshot -> export -> reset -> import', async () => {
   txCounter = 0;
+  resetAlarmState();
   await handleMessage({ type: 'RESET_WALLET' });
 
   const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
@@ -123,6 +142,7 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
 
 test('send transaction records local pending activity', async () => {
   txCounter = 0;
+  resetAlarmState();
   await handleMessage({ type: 'RESET_WALLET' });
   const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
 
@@ -153,4 +173,70 @@ test('send transaction records local pending activity', async () => {
   assert.equal(history.txs[0].source, 'local');
   assert.equal(history.txs[1].source, 'local');
   assert.deepEqual(history.txs.map((tx) => tx.nonce).sort((a, b) => a - b), [0, 1]);
+});
+
+test('wrong password is reported safely and without internal details', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  const exported = await dispatchRuntimeMessage({
+    type: 'CREATE_WALLET',
+    password: 'correct horse battery',
+  });
+  assert.equal(exported.ok, undefined);
+
+  await handleMessage({ type: 'LOCK_WALLET' });
+  const response = await dispatchRuntimeMessage({
+    type: 'UNLOCK_WALLET',
+    password: 'wrong password',
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error, 'Incorrect password or corrupted keystore');
+  assert.equal(response.error.includes('ciphertext'), false);
+  assert.equal(response.error.includes('kdf_params'), false);
+});
+
+test('tampered keystore and startup relock are enforced', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+  const exported = await handleMessage({ type: 'EXPORT_KEYSTORE' });
+  const tampered = JSON.parse(exported.keystoreJson);
+  tampered.public_key = tampered.public_key.replace(/.$/, tampered.public_key.endsWith('0') ? '1' : '0');
+
+  await handleMessage({ type: 'RESET_WALLET' });
+  const tamperedResponse = await dispatchRuntimeMessage({
+    type: 'IMPORT_KEYSTORE',
+    keystoreJson: JSON.stringify(tampered),
+    password: 'correct horse battery',
+  });
+  assert.equal(tamperedResponse.ok, false);
+  assert.equal(tamperedResponse.error, 'Public key mismatch — wrong password or corrupt keystore');
+
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+  assert.equal((await handleMessage({ type: 'CHECK_LOCKED' })).locked, false);
+  await listeners.onStartup[0]();
+  assert.equal((await handleMessage({ type: 'CHECK_LOCKED' })).locked, true);
+});
+
+test('auto-lock can be configured and is triggered by alarm', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+  await handleMessage({ type: 'SET_AUTO_LOCK', minutes: 3 });
+
+  assert.equal(createdAlarms.some((alarm) => alarm.name === 'shella-auto-lock'), true);
+  await listeners.onAlarm[0]({ name: 'shella-auto-lock' });
+  assert.equal((await handleMessage({ type: 'CHECK_LOCKED' })).locked, true);
+  assert.equal(clearedAlarms.includes('shella-auto-lock'), true);
+});
+
+test('manifest permissions remain minimal', async () => {
+  const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+  assert.deepEqual(manifest.permissions, ['storage', 'alarms']);
+  assert.deepEqual(manifest.host_permissions, []);
 });
