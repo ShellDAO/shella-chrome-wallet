@@ -112,7 +112,7 @@ export async function setAutoLockMinutes(minutes: number): Promise<void> {
   await chrome.storage.local.set({ autoLockMinutes: minutes });
 }
 
-// Session storage for unlocked key material (cleared when browser closes)
+// Session storage tracks unlock state only. Secret key material stays in memory.
 export async function setSessionState(state: SessionState): Promise<void> {
   await chrome.storage.session.set({ walletSession: state });
 }
@@ -124,11 +124,6 @@ export async function getSessionState(): Promise<SessionState | null> {
 
 export async function clearSessionState(): Promise<void> {
   await chrome.storage.session.remove('walletSession');
-}
-
-export async function isUnlocked(): Promise<boolean> {
-  const session = await getSessionState();
-  return session !== null;
 }
 
 export async function getConnectedSites(): Promise<string[]> {

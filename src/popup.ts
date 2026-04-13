@@ -29,6 +29,7 @@ interface AppState {
   network: Network;
   detectedChainId: number | null;
   nonce: number | null;
+  autoLockMinutes: number;
   txHistory: WalletTxRecord[];
   txQueue: WalletTxRecord[];
   error: string;
@@ -52,6 +53,7 @@ const state: AppState = {
   network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
   detectedChainId: null,
   nonce: null,
+  autoLockMinutes: 15,
   txHistory: [],
   txQueue: [],
   error: '',
@@ -392,6 +394,10 @@ function renderSettings(): string {
       </div>
 
       <div class="section-title" style="margin-top:16px">Security</div>
+      <label>Auto-lock (minutes, 0 = disabled)
+        <input type="number" id="auto-lock-minutes" min="0" value="${state.autoLockMinutes}" />
+      </label>
+      <button id="btn-save-auto-lock" class="btn-secondary">Save Auto-lock</button>
       <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
       <button id="btn-reset" class="btn-danger">Reset Wallet</button>
     </div>
@@ -718,6 +724,17 @@ function attachHandlers(): void {
     await refreshWalletData();
     showToast('Custom RPC saved');
   });
+
+  on('btn-save-auto-lock', 'click', async () => {
+    const minutes = Number((document.getElementById('auto-lock-minutes') as HTMLInputElement)?.value);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      showToast('Auto-lock minutes must be 0 or greater', true);
+      return;
+    }
+    await send('SET_AUTO_LOCK', { minutes });
+    state.autoLockMinutes = minutes;
+    showToast('Auto-lock updated');
+  });
 }
 
 // ────────── Helpers ──────────
@@ -735,6 +752,7 @@ async function refreshWalletData(): Promise<void> {
   const snapshot = await send<WalletSnapshot>('GET_WALLET_SNAPSHOT');
   state.network = snapshot.wallet.network;
   state.txQueue = snapshot.wallet.txQueue;
+  state.autoLockMinutes = snapshot.wallet.autoLockMinutes;
   state.detectedChainId = snapshot.detectedChainId;
   state.nonce = snapshot.nonce;
   if (snapshot.primaryAccount) {
@@ -787,6 +805,7 @@ async function boot(): Promise<void> {
   const snapshot = await send<WalletSnapshot>('GET_WALLET_SNAPSHOT');
   state.network = snapshot.wallet.network;
   state.txQueue = snapshot.wallet.txQueue;
+  state.autoLockMinutes = snapshot.wallet.autoLockMinutes;
   state.detectedChainId = snapshot.detectedChainId;
   state.nonce = snapshot.nonce;
 

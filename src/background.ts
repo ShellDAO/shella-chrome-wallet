@@ -22,11 +22,9 @@ import {
   getAutoLockMinutes,
   getConnectedSites,
   getNetwork,
-  getSessionState,
   getTxQueue,
   getWalletState,
   initStore,
-  isUnlocked,
   removeConnectedSite,
   setAutoLockMinutes,
   setNetwork,
@@ -54,7 +52,8 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  await restoreSignerFromSession();
+  currentSigner = null;
+  await clearSessionState();
   await pollPendingTransactions();
 });
 
@@ -77,21 +76,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     });
   return true;
 });
-
-async function restoreSignerFromSession(): Promise<void> {
-  if (currentSigner) return;
-  try {
-    const session = await getSessionState();
-    if (!session) return;
-    const sk = hexToBytes(session.secretKeyHex);
-    const pk = hexToBytes(session.publicKeyHex);
-    const adapter = MlDsa65Adapter.fromKeyPair(pk, sk);
-    currentSigner = new ShellSigner('MlDsa65', adapter);
-    await scheduleAutoLock();
-  } catch {
-    await clearSessionState();
-  }
-}
 
 async function scheduleAutoLock(): Promise<void> {
   const minutes = await getAutoLockMinutes();
@@ -116,8 +100,6 @@ async function lockWallet(): Promise<void> {
 }
 
 export async function handleMessage(msg: { type: string; [key: string]: unknown }): Promise<unknown> {
-  await restoreSignerFromSession();
-
   switch (msg.type) {
     case 'CREATE_WALLET':
       return createWallet(requirePassword(msg.password));
@@ -129,7 +111,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       await lockWallet();
       return { ok: true };
     case 'CHECK_LOCKED':
-      return { locked: !(await isUnlocked()) };
+      return { locked: currentSigner === null };
     case 'GET_WALLET_SNAPSHOT':
       return getWalletSnapshot();
     case 'GET_ACCOUNTS':
@@ -192,9 +174,7 @@ async function createWallet(password: string): Promise<{ pqAddress: string; hexA
   currentSigner = signer;
   await setSessionState({
     unlockedPqAddress: pqAddress,
-    secretKeyHex: bytesToHex(sk),
-    publicKeyHex: bytesToHex(pk),
-    signatureType: 'MlDsa65',
+    unlockedAt: Date.now(),
   });
   await scheduleAutoLock();
   sk.fill(0);
@@ -218,12 +198,7 @@ async function importKeystore(
   await addAccount(account);
 
   currentSigner = signer;
-  await setSessionState({
-    unlockedPqAddress: pqAddress,
-    secretKeyHex: bytesToHex(secretKey),
-    publicKeyHex: bytesToHex(publicKey),
-    signatureType: 'MlDsa65',
-  });
+  await setSessionState({ unlockedPqAddress: pqAddress, unlockedAt: Date.now() });
   await scheduleAutoLock();
   secretKey.fill(0);
 
@@ -240,12 +215,7 @@ async function unlockWallet(password: string): Promise<{ ok: boolean; pqAddress?
   const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey);
   currentSigner = new ShellSigner('MlDsa65', adapter);
 
-  await setSessionState({
-    unlockedPqAddress: account.pqAddress,
-    secretKeyHex: bytesToHex(secretKey),
-    publicKeyHex: bytesToHex(publicKey),
-    signatureType: 'MlDsa65',
-  });
+  await setSessionState({ unlockedPqAddress: account.pqAddress, unlockedAt: Date.now() });
   await scheduleAutoLock();
   secretKey.fill(0);
 
@@ -255,7 +225,7 @@ async function unlockWallet(password: string): Promise<{ ok: boolean; pqAddress?
 async function getWalletSnapshot(): Promise<WalletSnapshot> {
   const wallet = await getWalletState();
   const primaryAccount = wallet.accounts[0] ?? null;
-  const locked = !(await isUnlocked());
+  const locked = currentSigner === null;
 
   if (!primaryAccount) {
     return {
@@ -567,21 +537,6 @@ function requireNumber(value: unknown, field: string): number {
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.replace(/^0x/, '');
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
 }
 
 function toHexAddress(pqAddress: string): `0x${string}` {

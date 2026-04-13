@@ -37,9 +37,7 @@ export interface WalletState {
 
 export interface SessionState {
   unlockedPqAddress: string;
-  secretKeyHex: string;
-  publicKeyHex: string;
-  signatureType: string;
+  unlockedAt: number;
 }
 
 export interface WalletSnapshot {
