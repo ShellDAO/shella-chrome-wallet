@@ -1,54 +1,83 @@
 /**
  * Shella Wallet — background service worker.
  *
- * Handles wallet lifecycle: key generation, encryption/decryption,
- * lock/unlock, transaction signing, and RPC proxying.
- *
- * In-memory signer is cleared when the service worker restarts,
- * requiring the user to re-enter their password (wallet locks).
+ * Handles wallet lifecycle: key generation, encryption/decryption, lock/unlock,
+ * transaction signing, receipt tracking, and RPC proxying.
  */
 
 import { MlDsa65Adapter, generateMlDsa65KeyPair } from 'shell-sdk/adapters';
-import { ShellSigner } from 'shell-sdk/signer';
-import { createShellProvider } from 'shell-sdk/provider';
-import { buildTransferTransaction, buildTransaction, hashTransaction } from 'shell-sdk/transactions';
 import { normalizeHexAddress } from 'shell-sdk/address';
+import { createShellProvider } from 'shell-sdk/provider';
+import { ShellSigner } from 'shell-sdk/signer';
+import { buildTransaction, buildTransferTransaction, hashTransaction } from 'shell-sdk/transactions';
+import type { ShellEncryptedKey } from 'shell-sdk/types';
 import { defineChain, parseEther } from 'viem';
 import { createKeystore, decryptKeystore } from './crypto.js';
 import {
-  initStore,
-  getAccounts,
   addAccount,
+  addConnectedSite,
+  clearAllData,
+  clearSessionState,
+  getAccounts,
+  getAutoLockMinutes,
+  getConnectedSites,
   getNetwork,
+  getSessionState,
+  getTxQueue,
+  getWalletState,
+  initStore,
+  isUnlocked,
+  removeConnectedSite,
+  setAutoLockMinutes,
   setNetwork,
   setSessionState,
-  getSessionState,
-  clearSessionState,
-  isUnlocked,
-  getAutoLockMinutes,
-  setAutoLockMinutes,
-  addConnectedSite,
-  removeConnectedSite,
-  getConnectedSites,
-  clearAllData,
-  type Network,
-  type StoredAccount,
+  setTxQueue,
+  upsertTxRecord,
 } from './store.js';
+import type {
+  Network,
+  SendTransactionParams,
+  StoredAccount,
+  WalletSnapshot,
+  WalletTxRecord,
+} from './types.js';
 
-// In-memory signer (cleared on service worker restart)
+const AUTO_LOCK_ALARM = 'shella-auto-lock';
+const TX_POLL_ALARM = 'shella-tx-poll';
+
 let currentSigner: ShellSigner | null = null;
 
 chrome.runtime.onInstalled.addListener(async () => {
   await initStore();
+  await pollPendingTransactions();
   console.warn('[Shella] wallet installed');
 });
 
-// Restore signer from session storage on service worker startup
 chrome.runtime.onStartup.addListener(async () => {
   await restoreSignerFromSession();
+  await pollPendingTransactions();
 });
 
-// Also try to restore on first message if signer is null
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === AUTO_LOCK_ALARM) {
+    await lockWallet();
+    return;
+  }
+  if (alarm.name === TX_POLL_ALARM) {
+    await pollPendingTransactions();
+  }
+});
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  handleMessage(msg as { type: string; [key: string]: unknown })
+    .then(sendResponse)
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      sendResponse({ ok: false, error: message });
+    });
+  return true;
+});
+
 async function restoreSignerFromSession(): Promise<void> {
   if (currentSigner) return;
   try {
@@ -58,14 +87,11 @@ async function restoreSignerFromSession(): Promise<void> {
     const pk = hexToBytes(session.publicKeyHex);
     const adapter = MlDsa65Adapter.fromKeyPair(pk, sk);
     currentSigner = new ShellSigner('MlDsa65', adapter);
-    scheduleAutoLock();
+    await scheduleAutoLock();
   } catch {
     await clearSessionState();
   }
 }
-
-// Auto-lock via chrome.alarms
-const AUTO_LOCK_ALARM = 'shella-auto-lock';
 
 async function scheduleAutoLock(): Promise<void> {
   const minutes = await getAutoLockMinutes();
@@ -74,11 +100,14 @@ async function scheduleAutoLock(): Promise<void> {
   }
 }
 
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === AUTO_LOCK_ALARM) {
-    await lockWallet();
+async function scheduleTxPolling(): Promise<void> {
+  const txQueue = await getTxQueue();
+  if (txQueue.some((tx) => tx.status === 'pending')) {
+    chrome.alarms.create(TX_POLL_ALARM, { delayInMinutes: 0.5, periodInMinutes: 0.5 });
+  } else {
+    chrome.alarms.clear(TX_POLL_ALARM);
   }
-});
+}
 
 async function lockWallet(): Promise<void> {
   currentSigner = null;
@@ -86,106 +115,80 @@ async function lockWallet(): Promise<void> {
   chrome.alarms.clear(AUTO_LOCK_ALARM);
 }
 
-// Message handler
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  handleMessage(msg)
-    .then(sendResponse)
-    .catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      sendResponse({ ok: false, error: message });
-    });
-  return true; // keep channel open for async response
-});
-
-async function handleMessage(msg: { type: string; [key: string]: unknown }): Promise<unknown> {
-  // Restore signer from session if service worker restarted
+export async function handleMessage(msg: { type: string; [key: string]: unknown }): Promise<unknown> {
   await restoreSignerFromSession();
 
   switch (msg.type) {
     case 'CREATE_WALLET':
-      return createWallet(msg.password as string);
-
+      return createWallet(requirePassword(msg.password));
     case 'IMPORT_KEYSTORE':
-      return importKeystore(msg.keystoreJson as string, msg.password as string);
-
+      return importKeystore(requireString(msg.keystoreJson, 'keystoreJson'), requirePassword(msg.password));
     case 'UNLOCK_WALLET':
-      return unlockWallet(msg.password as string);
-
+      return unlockWallet(requirePassword(msg.password));
     case 'LOCK_WALLET':
       await lockWallet();
       return { ok: true };
-
     case 'CHECK_LOCKED':
       return { locked: !(await isUnlocked()) };
-
+    case 'GET_WALLET_SNAPSHOT':
+      return getWalletSnapshot();
     case 'GET_ACCOUNTS':
       return { accounts: await getAccounts() };
-
     case 'GET_BALANCE':
-      return getBalance(msg.address as string);
-
+      return getBalance(requireString(msg.address, 'address'));
     case 'SEND_TX':
       return sendTransaction({
-        to: msg.to as string,
-        value: msg.value as string,
-        data: msg.data as string | undefined,
+        to: requireString(msg.to, 'to'),
+        value: requireString(msg.value, 'value'),
+        data: optionalString(msg.data),
+        gasLimit: optionalNumber(msg.gasLimit),
+        maxFeePerGas: optionalNumber(msg.maxFeePerGas),
+        maxPriorityFeePerGas: optionalNumber(msg.maxPriorityFeePerGas),
       });
-
     case 'GET_TX_HISTORY':
-      return getTxHistory(msg.address as string, (msg.page as number) ?? 0);
-
+      return getTxHistory(requireString(msg.address, 'address'), optionalNumber(msg.page) ?? 0);
     case 'GET_NETWORK':
       return { network: await getNetwork() };
-
     case 'SET_NETWORK':
-      await setNetwork(msg.network as Network);
+      await setNetwork(validateNetwork(msg.network));
       return { ok: true };
-
     case 'EXPORT_KEYSTORE': {
       const accounts = await getAccounts();
       if (accounts.length === 0) throw new Error('No wallet to export');
       return { keystoreJson: accounts[0].keystoreJson };
     }
-
     case 'RESET_WALLET':
       await lockWallet();
       await clearAllData();
       return { ok: true };
-
     case 'SET_AUTO_LOCK':
-      await setAutoLockMinutes(msg.minutes as number);
+      await setAutoLockMinutes(requireNumber(msg.minutes, 'minutes'));
+      await scheduleAutoLock();
       return { ok: true };
-
     case 'GET_CONNECTED_SITES':
       return { sites: await getConnectedSites() };
-
-    case 'REMOVE_CONNECTED_SITE':
-      await removeConnectedSite(msg.origin as string);
+    case 'ADD_CONNECTED_SITE':
+      await addConnectedSite(requireString(msg.origin, 'origin'));
       return { ok: true };
-
+    case 'REMOVE_CONNECTED_SITE':
+      await removeConnectedSite(requireString(msg.origin, 'origin'));
+      return { ok: true };
     default:
-      throw new Error('Unknown message type: ' + msg.type);
+      throw new Error(`Unknown message type: ${msg.type}`);
   }
 }
 
 async function createWallet(password: string): Promise<{ pqAddress: string; hexAddress: string }> {
-  if (!password || password.length < 8) {
-    throw new Error('Password must be at least 8 characters');
-  }
-
   const { publicKey: pk, secretKey: sk } = generateMlDsa65KeyPair();
   const adapter = MlDsa65Adapter.fromKeyPair(pk, sk);
   const signer = new ShellSigner('MlDsa65', adapter);
   const pqAddress = signer.getAddress();
   const hexAddress = signer.getHexAddress();
 
-  const ks = await createKeystore(sk, pk, password, pqAddress, 'mldsa65');
-  const keystoreJson = JSON.stringify(ks);
-
-  const account: StoredAccount = { pqAddress, hexAddress, keystoreJson };
+  const keystore = await createKeystore(sk, pk, password, pqAddress, 'mldsa65');
+  const account: StoredAccount = { pqAddress, hexAddress, keystoreJson: JSON.stringify(keystore) };
   await addAccount(account);
 
-  // Unlock after creation
   currentSigner = signer;
   await setSessionState({
     unlockedPqAddress: pqAddress,
@@ -202,15 +205,15 @@ async function importKeystore(
   keystoreJson: string,
   password: string,
 ): Promise<{ pqAddress: string; hexAddress: string }> {
-  const ks = JSON.parse(keystoreJson);
-  const { secretKey, publicKey } = await decryptKeystore(ks, password);
+  const parsed = parseKeystorePayload(keystoreJson);
+  const { secretKey, publicKey } = await decryptKeystore(parsed, password);
 
   const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey);
   const signer = new ShellSigner('MlDsa65', adapter);
   const pqAddress = signer.getAddress();
   const hexAddress = signer.getHexAddress();
 
-  const account: StoredAccount = { pqAddress, hexAddress, keystoreJson };
+  const account: StoredAccount = { pqAddress, hexAddress, keystoreJson: JSON.stringify(parsed) };
   await addAccount(account);
 
   currentSigner = signer;
@@ -248,72 +251,178 @@ async function unlockWallet(password: string): Promise<{ ok: boolean; pqAddress?
   return { ok: true, pqAddress: account.pqAddress };
 }
 
+async function getWalletSnapshot(): Promise<WalletSnapshot> {
+  const wallet = await getWalletState();
+  const primaryAccount = wallet.accounts[0] ?? null;
+  const locked = !(await isUnlocked());
+
+  if (!primaryAccount) {
+    return {
+      locked,
+      wallet,
+      primaryAccount: null,
+      balance: null,
+      nonce: null,
+      detectedChainId: null,
+    };
+  }
+
+  try {
+    const provider = buildProvider(wallet.network);
+    const [balance, nonce, detectedChainId] = await Promise.all([
+      provider.client.getBalance({ address: primaryAccount.hexAddress as `0x${string}` }),
+      provider.client.getTransactionCount({ address: primaryAccount.hexAddress as `0x${string}` }),
+      provider.client.getChainId(),
+    ]);
+    return {
+      locked,
+      wallet,
+      primaryAccount,
+      balance: {
+        raw: balance.toString(),
+        formatted: formatEther(balance),
+      },
+      nonce,
+      detectedChainId,
+    };
+  } catch {
+    return {
+      locked,
+      wallet,
+      primaryAccount,
+      balance: null,
+      nonce: null,
+      detectedChainId: null,
+    };
+  }
+}
+
 async function getBalance(address: string): Promise<{ balance: string; formatted: string }> {
   const network = await getNetwork();
   const provider = buildProvider(network);
   const hexAddr = address.startsWith('0x') ? (address as `0x${string}`) : toHexAddress(address);
   const balance = await provider.client.getBalance({ address: hexAddr });
-  const formatted = formatEther(balance);
-  return { balance: balance.toString(), formatted };
+  return { balance: balance.toString(), formatted: formatEther(balance) };
 }
 
-async function sendTransaction(params: {
-  to: string;
-  value: string;
-  data?: string;
-}): Promise<{ txHash: string }> {
+async function sendTransaction(params: SendTransactionParams): Promise<{ txHash: string }> {
   if (!currentSigner) throw new Error('Wallet is locked');
 
   const network = await getNetwork();
   const provider = buildProvider(network);
-  const hexAddr = currentSigner.getHexAddress();
-
-  const nonce = await provider.client.getTransactionCount({ address: hexAddr });
+  const from = currentSigner.getHexAddress();
+  const to = normalizeRecipient(params.to);
   const valueBigInt = parseEtherValue(params.value);
+  const data = normalizeData(params.data);
 
-  const tx = params.data && params.data !== '0x'
-    ? buildTransaction({
+  const nonce = await provider.client.getTransactionCount({ address: from });
+  const tx = data === '0x'
+    ? buildTransferTransaction({
         chainId: network.chainId,
         nonce,
-        to: params.to,
+        to,
         value: valueBigInt,
-        data: params.data as `0x${string}`,
+        gasLimit: params.gasLimit,
+        maxFeePerGas: params.maxFeePerGas,
+        maxPriorityFeePerGas: params.maxPriorityFeePerGas,
       })
-    : buildTransferTransaction({
+    : buildTransaction({
         chainId: network.chainId,
         nonce,
-        to: params.to,
+        to,
         value: valueBigInt,
+        data,
+        gasLimit: params.gasLimit,
+        maxFeePerGas: params.maxFeePerGas,
+        maxPriorityFeePerGas: params.maxPriorityFeePerGas,
       });
 
-  const txHash = hashTransaction(tx);
-
-  // Include public key for first tx (nonce === 0)
   const signed = await currentSigner.buildSignedTransaction({
     tx,
-    txHash,
+    txHash: hashTransaction(tx),
     includePublicKey: nonce === 0,
   });
 
-  const hash = await provider.sendTransaction(signed);
-  return { txHash: hash };
+  const txHash = await provider.sendTransaction(signed);
+  await upsertTxRecord({
+    txHash,
+    from,
+    to: to.startsWith('0x') ? to : normalizeHexAddress(to),
+    value: valueBigInt.toString(),
+    data,
+    nonce,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    status: 'pending',
+    source: 'local',
+  });
+  await scheduleTxPolling();
+
+  return { txHash };
 }
 
 async function getTxHistory(
   address: string,
   page: number,
-): Promise<{ txs: unknown[]; total: number }> {
+): Promise<{ txs: WalletTxRecord[]; total: number }> {
   const network = await getNetwork();
   const provider = buildProvider(network);
   const result = (await provider.getTransactionsByAddress(address, {
     page,
     limit: 20,
-  })) as { transactions: unknown[]; total: number } | null;
-  if (!result) return { txs: [], total: 0 };
-  return { txs: result.transactions ?? [], total: result.total ?? 0 };
+  })) as { transactions?: unknown[]; total?: number } | null;
+
+  const remoteTxs = (result?.transactions ?? [])
+    .map((tx) => normalizeRemoteTxRecord(tx))
+    .filter((tx): tx is WalletTxRecord => tx !== null);
+
+  const localTxs = (await getTxQueue()).filter((tx) => {
+    const normalized = address.startsWith('0x') ? address.toLowerCase() : toHexAddress(address).toLowerCase();
+    return tx.from.toLowerCase() === normalized || tx.to.toLowerCase() === normalized;
+  });
+
+  const merged = new Map<string, WalletTxRecord>();
+  for (const tx of remoteTxs) merged.set(tx.txHash.toLowerCase(), tx);
+  for (const tx of localTxs) merged.set(tx.txHash.toLowerCase(), tx);
+
+  const txs = [...merged.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  return { txs, total: Math.max(result?.total ?? 0, txs.length) };
 }
 
-// Helpers
+async function pollPendingTransactions(): Promise<void> {
+  const txQueue = await getTxQueue();
+  const pending = txQueue.filter((tx) => tx.status === 'pending');
+  if (pending.length === 0) {
+    chrome.alarms.clear(TX_POLL_ALARM);
+    return;
+  }
+
+  const network = await getNetwork();
+  const provider = buildProvider(network);
+  let changed = false;
+
+  const next = await Promise.all(txQueue.map(async (tx) => {
+    if (tx.status !== 'pending') return tx;
+    try {
+      const receipt = await provider.client.getTransactionReceipt({ hash: tx.txHash as `0x${string}` });
+      changed = true;
+      return {
+        ...tx,
+        blockNumber: receipt.blockNumber ? `0x${receipt.blockNumber.toString(16)}` : null,
+        status: receipt.status === 'success' ? 'confirmed' : 'failed',
+        error: receipt.status === 'reverted' ? 'Transaction reverted on-chain' : undefined,
+        updatedAt: Date.now(),
+      } satisfies WalletTxRecord;
+    } catch {
+      return tx;
+    }
+  }));
+
+  if (changed) {
+    await setTxQueue(next);
+  }
+  await scheduleTxPolling();
+}
 
 function buildProvider(network: Network) {
   const chain = defineChain({
@@ -323,6 +432,125 @@ function buildProvider(network: Network) {
     rpcUrls: { default: { http: [network.rpcUrl] } },
   });
   return createShellProvider({ chain, rpcHttpUrl: network.rpcUrl });
+}
+
+function parseKeystorePayload(keystoreJson: string): ShellEncryptedKey {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(keystoreJson);
+  } catch {
+    throw new Error('Keystore JSON is invalid');
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Keystore payload must be a JSON object');
+  }
+
+  const requiredFields = [
+    'address',
+    'key_type',
+    'kdf',
+    'kdf_params',
+    'cipher',
+    'cipher_params',
+    'ciphertext',
+    'public_key',
+  ] as const;
+
+  for (const field of requiredFields) {
+    if (!(field in parsed)) {
+      throw new Error(`Keystore is missing required field: ${field}`);
+    }
+  }
+
+  return parsed as ShellEncryptedKey;
+}
+
+function normalizeRemoteTxRecord(value: unknown): WalletTxRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const tx = value as Record<string, unknown>;
+  const txHash = optionalString(tx.hash);
+  const from = optionalString(tx.from);
+  const to = optionalString(tx.to);
+  const storedValue = optionalString(tx.value);
+  if (!txHash || !from || !to || !storedValue) return null;
+
+  return {
+    txHash,
+    from,
+    to,
+    value: storedValue,
+    data: optionalString(tx.input) ?? optionalString(tx.data) ?? '0x',
+    createdAt: optionalNumber(tx.timestamp) ?? Date.now(),
+    updatedAt: optionalNumber(tx.timestamp) ?? Date.now(),
+    status: normalizeRemoteStatus(optionalString(tx.status)),
+    blockNumber: optionalString(tx.blockNumber) ?? null,
+    source: 'remote',
+  };
+}
+
+function normalizeRemoteStatus(status: string | undefined): WalletTxRecord['status'] {
+  if (status === 'failed' || status === 'reverted') return 'failed';
+  if (status === 'pending') return 'pending';
+  return 'confirmed';
+}
+
+function normalizeRecipient(address: string): string {
+  if (!address) throw new Error('Recipient address is required');
+  if (address.startsWith('0x')) return normalizeHexAddress(address);
+  if (!address.startsWith('pq1')) throw new Error('Recipient must be a pq1… or 0x… address');
+  return address;
+}
+
+function normalizeData(data?: string): `0x${string}` {
+  if (!data || data.trim() === '') return '0x';
+  const trimmed = data.trim();
+  if (!/^0x[0-9a-fA-F]*$/.test(trimmed) || trimmed.length % 2 !== 0) {
+    throw new Error('Calldata must be an even-length 0x-prefixed hex string');
+  }
+  return trimmed as `0x${string}`;
+}
+
+function validateNetwork(value: unknown): Network {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Network payload is invalid');
+  }
+  const network = value as Record<string, unknown>;
+  return {
+    name: requireString(network.name, 'network.name'),
+    chainId: requireNumber(network.chainId, 'network.chainId'),
+    rpcUrl: requireString(network.rpcUrl, 'network.rpcUrl'),
+  };
+}
+
+function requirePassword(value: unknown): string {
+  const password = requireString(value, 'password');
+  if (password.length < 8) {
+    throw new Error('Password must be at least 8 characters');
+  }
+  return password;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`${field} is required`);
+  }
+  return value;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function requireNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
+    throw new Error(`${field} must be a valid number`);
+  }
+  return value;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -351,9 +579,6 @@ function formatEther(wei: bigint): string {
 }
 
 function parseEtherValue(value: string): bigint {
-  // Accept decimal SHELL amount like "1.5" or raw wei hex like "0x1..."
   if (value.startsWith('0x')) return BigInt(value);
-  // Parse decimal
   return parseEther(value as `${number}`);
 }
-

@@ -3,6 +3,8 @@
  * Multi-view SPA rendered into #app.
  */
 
+import type { Network, WalletSnapshot, WalletTxRecord } from './types.js';
+
 type View =
   | 'loading'
   | 'welcome'
@@ -24,23 +26,21 @@ interface AppState {
   hexAddress: string;
   balance: string;
   balanceFormatted: string;
-  network: { name: string; chainId: number; rpcUrl: string };
-  txHistory: TxRecord[];
+  network: Network;
+  detectedChainId: number | null;
+  nonce: number | null;
+  txHistory: WalletTxRecord[];
+  txQueue: WalletTxRecord[];
   error: string;
   toast: string;
   // Temp fields for flows
   pendingKeystoreJson: string;
   sendTo: string;
   sendValue: string;
-}
-
-interface TxRecord {
-  hash?: string;
-  from?: string;
-  to?: string;
-  value?: string;
-  timestamp?: number;
-  status?: string;
+  sendData: string;
+  sendGasLimit: string;
+  sendMaxFeePerGas: string;
+  sendMaxPriorityFeePerGas: string;
 }
 
 const state: AppState = {
@@ -50,12 +50,19 @@ const state: AppState = {
   balance: '0',
   balanceFormatted: '0.000000',
   network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
+  detectedChainId: null,
+  nonce: null,
   txHistory: [],
+  txQueue: [],
   error: '',
   toast: '',
   pendingKeystoreJson: '',
   sendTo: '',
   sendValue: '',
+  sendData: '0x',
+  sendGasLimit: '',
+  sendMaxFeePerGas: '',
+  sendMaxPriorityFeePerGas: '',
 };
 
 function send<T = unknown>(type: string, data: Record<string, unknown> = {}): Promise<T> {
@@ -224,6 +231,20 @@ function renderLocked(): string {
 }
 
 function renderWallet(): string {
+  const pendingTxs = state.txQueue.filter((tx) => tx.status === 'pending').slice(0, 3);
+  const pendingHtml = pendingTxs.length > 0
+    ? `
+      <div class="pending-card">
+        <div class="pending-title">Pending Transactions</div>
+        ${pendingTxs.map((tx) => `
+          <div class="pending-item">
+            <span class="monospace">${truncate(tx.txHash, 8, 6)}</span>
+            <span>${formatDisplayValue(tx.value)} SHELL</span>
+          </div>
+        `).join('')}
+      </div>
+    `
+    : '';
   return `
     <div class="wallet-view">
       <div class="wallet-header">
@@ -239,6 +260,11 @@ function renderWallet(): string {
         <span class="balance-unit">SHELL</span>
         <button class="btn-refresh" id="btn-refresh" title="Refresh balance">↻</button>
       </div>
+      <div class="wallet-meta">
+        <span>Configured chain: ${state.network.chainId}</span>
+        <span>${state.detectedChainId == null ? 'RPC unavailable' : `RPC chain: ${state.detectedChainId}`}</span>
+        <span>${state.nonce == null ? 'Nonce unavailable' : `Nonce: ${state.nonce}`}</span>
+      </div>
       <div class="action-row">
         <button class="btn-action" id="btn-send">
           <span>↑</span>Send
@@ -250,6 +276,7 @@ function renderWallet(): string {
           <span>☰</span>History
         </button>
       </div>
+      ${pendingHtml}
     </div>
   `;
 }
@@ -265,9 +292,21 @@ function renderSend(): string {
       <label>Amount (SHELL)
         <input type="number" id="send-value" placeholder="0.0" step="any" min="0" value="${state.sendValue}" />
       </label>
+      <label>Calldata (optional 0x...)
+        <input type="text" id="send-data" placeholder="0x" value="${state.sendData}" />
+      </label>
+      <label>Gas Limit (optional)
+        <input type="number" id="send-gas-limit" placeholder="21000" min="21000" value="${state.sendGasLimit}" />
+      </label>
+      <label>Max Fee Per Gas (optional, wei)
+        <input type="number" id="send-max-fee" placeholder="1000000000" min="0" value="${state.sendMaxFeePerGas}" />
+      </label>
+      <label>Priority Fee (optional, wei)
+        <input type="number" id="send-priority-fee" placeholder="100000000" min="0" value="${state.sendMaxPriorityFeePerGas}" />
+      </label>
       <div class="fee-info">
-        <span class="label">Est. fee:</span>
-        <span class="fee-amount">~0.000021 SHELL</span>
+        <span class="label">Next nonce:</span>
+        <span class="fee-amount">${state.nonce == null ? 'unknown' : state.nonce}</span>
       </div>
       ${state.error ? `<div class="error">${state.error}</div>` : ''}
       <button id="btn-send-confirm" class="btn-primary">Send</button>
@@ -301,15 +340,15 @@ function renderReceive(): string {
 function renderHistory(): string {
   const txItems = state.txHistory.length > 0
     ? state.txHistory.map((tx) => {
-        const dir = tx.from?.toLowerCase() === state.hexAddress.toLowerCase() ? '↑ Sent' : '↓ Received';
-        const val = tx.value ? (parseInt(tx.value, 16) / 1e18).toFixed(6) : '?';
-        const hash = tx.hash ? truncate(tx.hash, 8, 6) : '–';
+        const dir = tx.from.toLowerCase() === state.hexAddress.toLowerCase() ? '↑ Sent' : '↓ Received';
+        const val = formatDisplayValue(tx.value);
+        const hash = tx.txHash ? truncate(tx.txHash, 8, 6) : '–';
         return `
           <div class="tx-item">
             <span class="tx-dir">${dir}</span>
             <span class="tx-hash monospace">${hash}</span>
             <span class="tx-value">${val} SHELL</span>
-            <span class="tx-status ${tx.status}">${tx.status ?? 'confirmed'}</span>
+            <span class="tx-status ${tx.status}">${tx.status}</span>
           </div>
         `;
       }).join('')
@@ -516,6 +555,10 @@ function attachHandlers(): void {
   on('btn-send', 'click', () => {
     state.sendTo = '';
     state.sendValue = '';
+    state.sendData = '0x';
+    state.sendGasLimit = '';
+    state.sendMaxFeePerGas = '';
+    state.sendMaxPriorityFeePerGas = '';
     state.error = '';
     state.view = 'send';
     render();
@@ -530,7 +573,7 @@ function attachHandlers(): void {
     state.view = 'history';
     render();
     try {
-      const res = await send<{ txs: TxRecord[] }>('GET_TX_HISTORY', { address: state.pqAddress });
+      const res = await send<{ txs: WalletTxRecord[] }>('GET_TX_HISTORY', { address: state.pqAddress });
       state.txHistory = res.txs;
       render();
     } catch {
@@ -551,23 +594,52 @@ function attachHandlers(): void {
   on('btn-send-confirm', 'click', async () => {
     const to = (document.getElementById('send-to') as HTMLInputElement)?.value?.trim();
     const value = (document.getElementById('send-value') as HTMLInputElement)?.value?.trim();
+    const data = (document.getElementById('send-data') as HTMLInputElement)?.value?.trim() || '0x';
+    const gasLimit = (document.getElementById('send-gas-limit') as HTMLInputElement)?.value?.trim();
+    const maxFeePerGas = (document.getElementById('send-max-fee') as HTMLInputElement)?.value?.trim();
+    const maxPriorityFeePerGas =
+      (document.getElementById('send-priority-fee') as HTMLInputElement)?.value?.trim();
+
     if (!to || !value) {
       state.error = 'Enter recipient address and amount';
+      render();
+      return;
+    }
+    if (!/^pq1|^0x/.test(to)) {
+      state.error = 'Recipient must be a pq1… or 0x… address';
+      render();
+      return;
+    }
+    if (Number(value) <= 0) {
+      state.error = 'Amount must be greater than 0';
+      render();
+      return;
+    }
+    if (data !== '0x' && !/^0x[0-9a-fA-F]*$/.test(data)) {
+      state.error = 'Calldata must be 0x-prefixed hex';
       render();
       return;
     }
     state.error = '';
     state.sendTo = to;
     state.sendValue = value;
+    state.sendData = data;
+    state.sendGasLimit = gasLimit;
+    state.sendMaxFeePerGas = maxFeePerGas;
+    state.sendMaxPriorityFeePerGas = maxPriorityFeePerGas;
     try {
-      const res = await send<{ txHash: string }>('SEND_TX', { to, value });
-      showToast('Sent! Tx: ' + truncate(res.txHash, 8, 6));
+      const res = await send<{ txHash: string }>('SEND_TX', {
+        to,
+        value,
+        data,
+        gasLimit: parseOptionalNumber(gasLimit),
+        maxFeePerGas: parseOptionalNumber(maxFeePerGas),
+        maxPriorityFeePerGas: parseOptionalNumber(maxPriorityFeePerGas),
+      });
+      showToast('Submitted: ' + truncate(res.txHash, 8, 6));
+      await refreshWalletData();
       state.view = 'wallet';
       render();
-      // Refresh balance after a short delay
-      setTimeout(async () => {
-        try { await refreshBalance(); render(); } catch { /* ignore */ }
-      }, 3000);
     } catch (err) {
       state.error = (err as Error).message;
       render();
@@ -597,7 +669,10 @@ function attachHandlers(): void {
         hexAddress: '',
         balance: '0',
         balanceFormatted: '0.000000',
+        detectedChainId: null,
+        nonce: null,
         txHistory: [],
+        txQueue: [],
         error: '',
       });
       render();
@@ -623,6 +698,7 @@ function attachHandlers(): void {
       if (net) {
         await send('SET_NETWORK', { network: net });
         state.network = net;
+        await refreshWalletData();
         showToast('Network switched to ' + net.name);
       }
     });
@@ -639,6 +715,7 @@ function attachHandlers(): void {
     const net = { name, chainId, rpcUrl };
     await send('SET_NETWORK', { network: net });
     state.network = net;
+    await refreshWalletData();
     showToast('Custom RPC saved');
   });
 }
@@ -655,17 +732,19 @@ async function refreshBalance(): Promise<void> {
 }
 
 async function refreshWalletData(): Promise<void> {
-  const [netRes, accountsRes] = await Promise.all([
-    send<{ network: { name: string; chainId: number; rpcUrl: string } }>('GET_NETWORK'),
-    send<{ accounts: Array<{ pqAddress: string; hexAddress: string }> }>('GET_ACCOUNTS'),
-  ]);
-  state.network = netRes.network;
-  if (accountsRes.accounts.length > 0) {
-    state.pqAddress = accountsRes.accounts[0].pqAddress;
-    state.hexAddress = accountsRes.accounts[0].hexAddress;
+  const snapshot = await send<WalletSnapshot>('GET_WALLET_SNAPSHOT');
+  state.network = snapshot.wallet.network;
+  state.txQueue = snapshot.wallet.txQueue;
+  state.detectedChainId = snapshot.detectedChainId;
+  state.nonce = snapshot.nonce;
+  if (snapshot.primaryAccount) {
+    state.pqAddress = snapshot.primaryAccount.pqAddress;
+    state.hexAddress = snapshot.primaryAccount.hexAddress;
   }
-  // Try to refresh balance (non-fatal)
-  try { await refreshBalance(); } catch { /* ignore */ }
+  if (snapshot.balance) {
+    state.balance = snapshot.balance.raw;
+    state.balanceFormatted = snapshot.balance.formatted;
+  }
 }
 
 function copyText(text: string, msg: string): void {
@@ -691,29 +770,40 @@ function downloadJson(json: string, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+function parseOptionalNumber(value: string): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatDisplayValue(value: string): string {
+  const normalized = value.startsWith('0x') ? BigInt(value) : BigInt(value);
+  return (Number(normalized) / 1e18).toFixed(6);
+}
+
 // ────────── Boot ──────────
 
 async function boot(): Promise<void> {
-  const [lockedRes, accountsRes, netRes] = await Promise.all([
-    send<{ locked: boolean }>('CHECK_LOCKED'),
-    send<{ accounts: Array<{ pqAddress: string; hexAddress: string }> }>('GET_ACCOUNTS'),
-    send<{ network: { name: string; chainId: number; rpcUrl: string } }>('GET_NETWORK'),
-  ]);
+  const snapshot = await send<WalletSnapshot>('GET_WALLET_SNAPSHOT');
+  state.network = snapshot.wallet.network;
+  state.txQueue = snapshot.wallet.txQueue;
+  state.detectedChainId = snapshot.detectedChainId;
+  state.nonce = snapshot.nonce;
 
-  state.network = netRes.network;
-
-  if (accountsRes.accounts.length === 0) {
+  if (!snapshot.primaryAccount) {
     state.view = 'welcome';
-  } else if (lockedRes.locked) {
-    state.pqAddress = accountsRes.accounts[0].pqAddress;
-    state.hexAddress = accountsRes.accounts[0].hexAddress;
+  } else if (snapshot.locked) {
+    state.pqAddress = snapshot.primaryAccount.pqAddress;
+    state.hexAddress = snapshot.primaryAccount.hexAddress;
     state.view = 'locked';
   } else {
-    state.pqAddress = accountsRes.accounts[0].pqAddress;
-    state.hexAddress = accountsRes.accounts[0].hexAddress;
+    state.pqAddress = snapshot.primaryAccount.pqAddress;
+    state.hexAddress = snapshot.primaryAccount.hexAddress;
+    if (snapshot.balance) {
+      state.balance = snapshot.balance.raw;
+      state.balanceFormatted = snapshot.balance.formatted;
+    }
     state.view = 'wallet';
-    // Refresh balance in background
-    refreshBalance().then(() => render()).catch(() => { /* ignore */ });
   }
 
   render();
@@ -724,4 +814,3 @@ boot().catch((err) => {
   state.error = (err as Error).message;
   render();
 });
-

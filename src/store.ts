@@ -3,31 +3,7 @@
  * Session state (unlocked key material) uses chrome.storage.session.
  */
 
-export interface Network {
-  name: string;
-  chainId: number;
-  rpcUrl: string;
-}
-
-export interface StoredAccount {
-  pqAddress: string;
-  hexAddress: string;
-  keystoreJson: string;
-}
-
-export interface WalletState {
-  accounts: StoredAccount[];
-  network: Network;
-  autoLockMinutes: number;
-  connectedSites: string[];
-}
-
-export interface SessionState {
-  unlockedPqAddress: string;
-  secretKeyHex: string;
-  publicKeyHex: string;
-  signatureType: string;
-}
+import type { Network, SessionState, StoredAccount, WalletState, WalletTxRecord } from './types.js';
 
 export const KNOWN_NETWORKS: Record<string, Network> = {
   devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
@@ -38,13 +14,30 @@ export const KNOWN_NETWORKS: Record<string, Network> = {
 const DEFAULT_NETWORK = KNOWN_NETWORKS.devnet;
 
 export async function initStore(): Promise<void> {
-  const existing = await chrome.storage.local.get(['network', 'accounts']);
+  const existing = await chrome.storage.local.get([
+    'network',
+    'accounts',
+    'autoLockMinutes',
+    'connectedSites',
+    'txQueue',
+  ]);
   if (!existing.accounts) {
     await chrome.storage.local.set({
       network: DEFAULT_NETWORK,
       accounts: [],
       autoLockMinutes: 15,
       connectedSites: [],
+      txQueue: [],
+    });
+    return;
+  }
+
+  if (!existing.network || existing.autoLockMinutes == null || !existing.connectedSites || !existing.txQueue) {
+    await chrome.storage.local.set({
+      network: existing.network ?? DEFAULT_NETWORK,
+      autoLockMinutes: existing.autoLockMinutes ?? 15,
+      connectedSites: existing.connectedSites ?? [],
+      txQueue: existing.txQueue ?? [],
     });
   }
 }
@@ -55,12 +48,14 @@ export async function getWalletState(): Promise<WalletState> {
     'accounts',
     'autoLockMinutes',
     'connectedSites',
+    'txQueue',
   ]);
   return {
     network: data.network ?? DEFAULT_NETWORK,
     accounts: data.accounts ?? [],
     autoLockMinutes: data.autoLockMinutes ?? 15,
     connectedSites: data.connectedSites ?? [],
+    txQueue: data.txQueue ?? [],
   };
 }
 
@@ -85,6 +80,27 @@ export async function getNetwork(): Promise<Network> {
 
 export async function setNetwork(n: Network): Promise<void> {
   await chrome.storage.local.set({ network: n });
+}
+
+export async function getTxQueue(): Promise<WalletTxRecord[]> {
+  const { txQueue } = await chrome.storage.local.get('txQueue');
+  return txQueue ?? [];
+}
+
+export async function setTxQueue(txQueue: WalletTxRecord[]): Promise<void> {
+  await chrome.storage.local.set({ txQueue });
+}
+
+export async function upsertTxRecord(record: WalletTxRecord): Promise<void> {
+  const txQueue = await getTxQueue();
+  const next = [...txQueue];
+  const index = next.findIndex((item) => item.txHash.toLowerCase() === record.txHash.toLowerCase());
+  if (index === -1) {
+    next.unshift(record);
+  } else {
+    next[index] = record;
+  }
+  await setTxQueue(next.slice(0, 50));
 }
 
 export async function getAutoLockMinutes(): Promise<number> {
@@ -140,4 +156,3 @@ export async function clearAllData(): Promise<void> {
   await chrome.storage.session.clear();
   await initStore();
 }
-

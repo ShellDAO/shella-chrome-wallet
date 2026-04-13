@@ -8,6 +8,7 @@
     "build": "node scripts/bundle.js",
     "build:prod": "node scripts/bundle.js --prod",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/**/*.test.mjs",
     "lint": "eslint src --ext .ts",
     "clean": "rm -rf dist"
   },

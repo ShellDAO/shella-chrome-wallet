@@ -258,6 +258,39 @@ input:focus, .select-input:focus { border-color: #1a6ef5; }
   gap: 6px;
   margin: 12px 0 20px;
 }
+
+.wallet-meta {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 16px;
+  color: #777;
+  font-size: 11px;
+}
+
+.pending-card {
+  margin-top: 10px;
+  border: 1px solid #2a2a2a;
+  background: #141414;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.pending-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #777;
+  margin-bottom: 8px;
+}
+
+.pending-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+}
 .balance-amount {
   font-size: 32px;
   font-weight: 800;
@@ -388,4 +421,3 @@ input:focus, .select-input:focus { border-color: #1a6ef5; }
 /* ── Animations ── */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-6px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-
