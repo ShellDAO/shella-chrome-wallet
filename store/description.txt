@@ -1,0 +1,21 @@
+Shella Wallet — Post-Quantum Chrome Wallet for Shell Chain
+
+Shella Wallet is the first post-quantum browser wallet built for Shell Chain, the Layer-1 blockchain designed for a quantum-secure future.
+
+KEY FEATURES
+• ML-DSA-65 (CRYSTALS-Dilithium) post-quantum signatures — quantum-resistant by design
+• Encrypted keystore using Argon2id + XChaCha20-Poly1305 — industry-leading key protection
+• Full compatibility with Shell CLI keystores — import/export seamlessly
+• Send & receive SHELL tokens with nonce management and gas customization
+• Transaction history with real-time status tracking
+• Multi-network support: Devnet, Testnet, and Mainnet
+• Custom RPC endpoint support
+• Auto-lock with configurable timeout
+• No seed phrases — keystore-based key management
+
+PRIVACY & SECURITY
+• Zero telemetry — no analytics, no tracking
+• All keys stored locally and encrypted
+• Open source — fully auditable code on GitHub
+
+Shell Chain is building the infrastructure for a post-quantum decentralized world. Shella Wallet puts that power in your browser.
