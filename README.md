@@ -1,6 +1,6 @@
 # shella-chrome-wallet
 
-Post-quantum Chrome wallet extension for [Shell Chain](https://github.com/LucienSong/shell-chain).
+Chrome wallet for [Shell Chain](https://github.com/LucienSong/shell-chain) — quantum-safe key management built for the era before Q-Day.
 
 ## Features
 
