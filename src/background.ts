@@ -36,6 +36,7 @@ import type {
   Network,
   SendTransactionParams,
   StoredAccount,
+  WalletNodeInfo,
   WalletSnapshot,
   WalletTxRecord,
 } from './types.js';
@@ -155,6 +156,8 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'REMOVE_CONNECTED_SITE':
       await removeConnectedSite(requireString(msg.origin, 'origin'));
       return { ok: true };
+    case 'GET_NODE_INFO':
+      return getNodeInfoFromNode((await getNetwork()).rpcUrl);
     default:
       throw new Error(`Unknown message type: ${msg.type}`);
   }
@@ -408,6 +411,21 @@ async function allocateNextNonce(from: `0x${string}`, onChainNonce: number): Pro
     return onChainNonce;
   }
   return Math.max(onChainNonce, pendingNonces[0] + 1);
+}
+
+async function getNodeInfoFromNode(rpcUrl: string): Promise<WalletNodeInfo | null> {
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'shell_getNodeInfo', params: [] }),
+    });
+    const data = await res.json() as { result?: WalletNodeInfo; error?: unknown };
+    if (data.error || !data.result) return null;
+    return data.result;
+  } catch {
+    return null;
+  }
 }
 
 function buildProvider(network: Network) {

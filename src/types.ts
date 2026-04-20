@@ -50,6 +50,19 @@ export interface WalletSnapshot {
   } | null;
   nonce: number | null;
   detectedChainId: number | null;
+  nodeInfo?: WalletNodeInfo | null;
+}
+
+/**
+ * Node connection info returned by background's `getNodeInfo` message.
+ * Mirrors ShellNodeInfo from shell-sdk.
+ */
+export interface WalletNodeInfo {
+  version: string;
+  chain_id: string;
+  block_height: number;
+  peer_count: number;
+  storage_profile?: 'archive' | 'full' | 'light';
 }
 
 export interface SendTransactionParams {
