@@ -14,6 +14,7 @@ import type { ShellEncryptedKey } from 'shell-sdk/types';
 import { defineChain, parseEther } from 'viem';
 import { createKeystore, decryptKeystore } from './crypto.js';
 import {
+  KNOWN_NETWORKS,
   addAccount,
   addConnectedSite,
   clearAllData,
@@ -36,6 +37,7 @@ import type {
   ConnectedSitePermission,
   DappRequestMessage,
   Network,
+  ApprovalRequest,
   SendTransactionParams,
   StoredAccount,
   WalletNodeInfo,
@@ -47,6 +49,13 @@ const AUTO_LOCK_ALARM = 'shella-auto-lock';
 const TX_POLL_ALARM = 'shella-tx-poll';
 
 let currentSigner: ShellSigner | null = null;
+const pendingApprovals = new Map<
+  string,
+  {
+    request: ApprovalRequest;
+    resolve: (approved: boolean) => void;
+  }
+>();
 
 chrome.runtime.onInstalled.addListener(async () => {
   await initStore();
@@ -154,7 +163,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return { sites: await getConnectedSites() };
     case 'ADD_CONNECTED_SITE':
       await addConnectedSite({
-        origin: requireString(msg.origin, 'origin'),
+        origin: normalizeOrigin(requireString(msg.origin, 'origin')),
         accounts: [],
         chainId: (await getNetwork()).chainId,
         grantedAt: Date.now(),
@@ -162,7 +171,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       });
       return { ok: true };
     case 'REMOVE_CONNECTED_SITE':
-      await removeConnectedSite(requireString(msg.origin, 'origin'));
+      await removeConnectedSite(normalizeOrigin(requireString(msg.origin, 'origin')));
       return { ok: true };
     case 'GET_NODE_INFO':
       return getNodeInfoFromNode((await getNetwork()).rpcUrl);
@@ -173,6 +182,10 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         params: Array.isArray(msg.params) ? msg.params : [],
         interactive: Boolean(msg.interactive),
       });
+    case 'GET_APPROVAL_REQUEST':
+      return getApprovalRequest(requireString(msg.requestId, 'requestId'));
+    case 'RESOLVE_APPROVAL':
+      return resolveApprovalRequest(requireString(msg.requestId, 'requestId'), Boolean(msg.approved));
     default:
       throw new Error(`Unknown message type: ${msg.type}`);
   }
@@ -455,7 +468,22 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
     case 'eth_requestAccounts': {
       if (!primaryAccount) throw new Error('No wallet found');
       if (!currentSigner) throw new Error('Wallet is locked');
-      if (!message.interactive) throw new Error('Interactive approval required');
+      if (permission?.accounts.length) {
+        await addConnectedSite(buildConnectedSite(origin, permission.accounts[0], network.chainId, permission.grantedAt));
+        return permission.accounts;
+      }
+      const approved = await requestUserApproval({
+        kind: 'connect',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          account: primaryAccount.hexAddress,
+          pqAddress: primaryAccount.pqAddress,
+          chainId: network.chainId,
+          networkName: network.name,
+        },
+      });
+      if (!approved) throw new Error('Request rejected by user');
       const granted = buildConnectedSite(origin, primaryAccount.hexAddress, network.chainId, permission?.grantedAt);
       await addConnectedSite(granted);
       return granted.accounts;
@@ -485,14 +513,28 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       if (from && normalizeHexAddress(from) !== permission.accounts[0]) {
         throw new Error('Requested from account is not permitted for this site');
       }
-      return sendTransaction({
+      const request = {
         to: requireString(candidate.to, 'to'),
         value: normalizeRpcValue(optionalString(candidate.value)),
         data: optionalString(candidate.data) ?? optionalString(candidate.input),
         gasLimit: optionalRpcNumber(candidate.gas) ?? optionalRpcNumber(candidate.gasLimit),
         maxFeePerGas: optionalRpcNumber(candidate.maxFeePerGas),
         maxPriorityFeePerGas: optionalRpcNumber(candidate.maxPriorityFeePerGas),
+      };
+      const approved = await requestUserApproval({
+        kind: 'send-transaction',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          account: permission.accounts[0],
+          to: request.to,
+          value: request.value,
+          data: request.data ?? '0x',
+          chainId: network.chainId,
+        },
       });
+      if (!approved) throw new Error('Request rejected by user');
+      return sendTransaction(request);
     }
     case 'eth_call': {
       const [tx] = normalizeArrayParams(message.params);
@@ -500,8 +542,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       const candidate = tx as Record<string, unknown>;
       const to = requireString(candidate.to, 'to');
       const data = normalizeData(optionalString(candidate.data) ?? optionalString(candidate.input));
-      const valueParam = optionalString(candidate.value);
-      const value = valueParam ? BigInt(valueParam) : undefined;
+      const value = normalizeOptionalRpcBigInt(optionalString(candidate.value), 'eth_call.value');
       return provider.client.call({
         to: normalizeHexAddress(to),
         data,
@@ -510,22 +551,35 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
     }
     case 'wallet_switchEthereumChain': {
       ensureConnected(permission, origin);
+      if (!currentSigner) throw new Error('Wallet is locked');
       const [chainPayload] = normalizeArrayParams(message.params);
       if (!chainPayload || typeof chainPayload !== 'object') {
         throw new Error('wallet_switchEthereumChain requires a chain payload');
       }
       const chainIdHex = requireString((chainPayload as Record<string, unknown>).chainId, 'chainId');
       const chainId = Number(BigInt(chainIdHex));
-      const nextNetwork = findKnownNetwork(chainId) ?? {
-        ...network,
-        chainId,
-      };
+      const nextNetwork = findKnownNetwork(chainId);
+      if (!nextNetwork) {
+        throw new Error('Unknown chain. Use wallet_addEthereumChain first.');
+      }
+      const approved = await requestUserApproval({
+        kind: 'switch-chain',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          chainId: nextNetwork.chainId,
+          networkName: nextNetwork.name,
+          rpcUrl: nextNetwork.rpcUrl,
+        },
+      });
+      if (!approved) throw new Error('Request rejected by user');
       await setNetwork(nextNetwork);
       await addConnectedSite(buildConnectedSite(origin, permission.accounts[0], nextNetwork.chainId, permission.grantedAt));
       return null;
     }
     case 'wallet_addEthereumChain': {
-      if (!message.interactive) throw new Error('Interactive approval required');
+      ensureConnected(permission, origin);
+      if (!currentSigner) throw new Error('Wallet is locked');
       const [chainPayload] = normalizeArrayParams(message.params);
       if (!chainPayload || typeof chainPayload !== 'object') {
         throw new Error('wallet_addEthereumChain requires a chain payload');
@@ -541,6 +595,17 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
         chainId,
         rpcUrl: rpcUrls[0],
       };
+      const approved = await requestUserApproval({
+        kind: 'add-chain',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          chainId: nextNetwork.chainId,
+          networkName: nextNetwork.name,
+          rpcUrl: nextNetwork.rpcUrl,
+        },
+      });
+      if (!approved) throw new Error('Request rejected by user');
       await setNetwork(nextNetwork);
       if (primaryAccount) {
         await addConnectedSite(buildConnectedSite(origin, primaryAccount.hexAddress, nextNetwork.chainId, permission?.grantedAt));
@@ -559,14 +624,28 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       if (from && from !== primaryAccount?.pqAddress) {
         throw new Error('Requested pq sender does not match the unlocked wallet');
       }
-      return sendTransaction({
+      const request = {
         to: requireString(candidate.to, 'to'),
         value: normalizeRpcValue(optionalString(candidate.value)),
         data: optionalString(candidate.data),
         gasLimit: optionalRpcNumber(candidate.gasLimit),
         maxFeePerGas: optionalRpcNumber(candidate.maxFeePerGas),
         maxPriorityFeePerGas: optionalRpcNumber(candidate.maxPriorityFeePerGas),
+      };
+      const approved = await requestUserApproval({
+        kind: 'send-transaction',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          account: primaryAccount?.pqAddress ?? null,
+          to: request.to,
+          value: request.value,
+          data: request.data ?? '0x',
+          chainId: network.chainId,
+        },
       });
+      if (!approved) throw new Error('Request rejected by user');
+      return sendTransaction(request);
     }
     default:
       throw new Error(`Unsupported dApp method: ${message.method}`);
@@ -602,6 +681,50 @@ function buildConnectedSite(
 async function getConnectedPermission(origin: string): Promise<ConnectedSitePermission | null> {
   const sites = await getConnectedSites();
   return sites.find((site) => site.origin === origin) ?? null;
+}
+
+async function requestUserApproval(
+  input: Omit<ApprovalRequest, 'id'>,
+): Promise<boolean> {
+  const requestId =
+    typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `approval-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const request: ApprovalRequest = { id: requestId, ...input };
+
+  return new Promise<boolean>((resolve, reject) => {
+    pendingApprovals.set(requestId, { request, resolve });
+
+    chrome.windows.create(
+      {
+        url: chrome.runtime.getURL(`popup.html?approvalId=${encodeURIComponent(requestId)}`),
+        type: 'popup',
+        width: 420,
+        height: 680,
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          pendingApprovals.delete(requestId);
+          reject(new Error(chrome.runtime.lastError.message));
+        }
+      },
+    );
+  });
+}
+
+function getApprovalRequest(requestId: string): ApprovalRequest {
+  const pending = pendingApprovals.get(requestId);
+  if (!pending) throw new Error('Approval request not found');
+  return pending.request;
+}
+
+function resolveApprovalRequest(requestId: string, approved: boolean): { ok: true } {
+  const pending = pendingApprovals.get(requestId);
+  if (!pending) throw new Error('Approval request not found');
+  pendingApprovals.delete(requestId);
+  pending.resolve(approved);
+  return { ok: true };
 }
 
 function ensureConnected(
@@ -644,12 +767,16 @@ function optionalRpcNumber(value: unknown): number | undefined {
 }
 
 function findKnownNetwork(chainId: number): Network | null {
-  const knownNetworks: Network[] = [
-    { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
-    { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' },
-    { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
-  ];
-  return knownNetworks.find((network) => network.chainId === chainId) ?? null;
+  return Object.values(KNOWN_NETWORKS).find((network) => network.chainId === chainId) ?? null;
+}
+
+function normalizeOptionalRpcBigInt(value: string | undefined, field: string): bigint | undefined {
+  if (!value) return undefined;
+  try {
+    return BigInt(value);
+  } catch {
+    throw new Error(`${field} must be a valid hex or decimal quantity`);
+  }
 }
 
 function parseKeystorePayload(keystoreJson: string): ShellEncryptedKey {
@@ -800,15 +927,19 @@ function toSafeErrorMessage(err: unknown): string {
     message === 'No wallet to export' ||
     message === 'Wallet is locked' ||
     message === 'Interactive approval required' ||
+    message === 'Request rejected by user' ||
     message === 'Recipient address is required' ||
     message === 'Recipient must be a pq1… or 0x… address' ||
     message === 'Calldata must be an even-length 0x-prefixed hex string' ||
     message === 'Network payload is invalid' ||
+    message === 'Approval request not found' ||
+    message === 'Unknown chain. Use wallet_addEthereumChain first.' ||
     message.startsWith('Site not connected:') ||
     message.startsWith('Unsupported dApp method:') ||
     message === 'Origin must be a valid http(s) URL' ||
     message === 'Requested from account is not permitted for this site' ||
     message === 'Requested pq sender does not match the unlocked wallet' ||
+    message.endsWith('must be a valid hex or decimal quantity') ||
     message.endsWith('is required') ||
     message.endsWith('must be a valid number')
   ) {

@@ -181,4 +181,27 @@ describe('store', () => {
     assert.deepEqual(state.accounts, []);
     assert.equal(state.network.name, 'Shell Devnet');
   });
+
+  test('initStore migrates legacy connectedSites strings into stable objects', async () => {
+    localArea._store.clear();
+    sessionArea._store.clear();
+    await localArea.set({
+      network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
+      accounts: [],
+      autoLockMinutes: 15,
+      connectedSites: ['https://legacy.example'],
+      txQueue: [],
+    });
+
+    await initStore();
+    const sites = await getConnectedSites();
+    assert.equal(sites.length, 1);
+    assert.equal(sites[0].origin, 'https://legacy.example');
+    assert.equal(Array.isArray(sites[0].accounts), true);
+    assert.equal(typeof sites[0].grantedAt, 'number');
+
+    const stored = await localArea.get('connectedSites');
+    assert.equal(typeof stored.connectedSites[0], 'object');
+    assert.equal(stored.connectedSites[0].origin, 'https://legacy.example');
+  });
 });

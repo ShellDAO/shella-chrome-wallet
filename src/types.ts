@@ -88,3 +88,11 @@ export interface DappRequestMessage {
   params?: unknown[];
   interactive?: boolean;
 }
+
+export interface ApprovalRequest {
+  id: string;
+  kind: 'connect' | 'add-chain' | 'switch-chain' | 'send-transaction';
+  origin: string;
+  createdAt: number;
+  payload: Record<string, unknown>;
+}

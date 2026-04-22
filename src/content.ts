@@ -19,18 +19,6 @@ function injectInpageScript(): void {
   script.onload = () => script.remove();
 }
 
-function isInteractiveMethod(method: string): boolean {
-  return [
-    'eth_requestAccounts',
-    'wallet_switchEthereumChain',
-    'wallet_addEthereumChain',
-    'personal_sign',
-    'eth_signTypedData_v4',
-    'eth_sendTransaction',
-    'shella_sendPqTransaction',
-  ].includes(method);
-}
-
 window.addEventListener('message', (event: MessageEvent<ProviderRequestPayload>) => {
   if (event.source !== window) return;
   if (!event.data || event.data.target !== REQUEST_TARGET || typeof event.data.id !== 'string') return;
@@ -42,7 +30,6 @@ window.addEventListener('message', (event: MessageEvent<ProviderRequestPayload>)
       origin: window.location.origin,
       method,
       params: Array.isArray(params) ? params : [],
-      interactive: isInteractiveMethod(method),
     },
     (response: unknown & { error?: string }) => {
       const payload = response?.error

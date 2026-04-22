@@ -32,6 +32,14 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: 'npm'
 
+      - name: Install shell-sdk dependencies
+        working-directory: shell-sdk
+        run: npm ci
+
+      - name: Build shell-sdk
+        working-directory: shell-sdk
+        run: npm run build
+
       - name: Install dependencies
         run: npm ci
 

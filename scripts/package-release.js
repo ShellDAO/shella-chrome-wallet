@@ -36,6 +36,8 @@ const releaseFiles = [
   'popup.html',
   'popup.css',
   'dist/background.js',
+  'dist/content.js',
+  'dist/inpage.js',
   'dist/popup.js',
   'icons/icon16.png',
   'icons/icon48.png',

@@ -20,12 +20,15 @@ export const KNOWN_NETWORKS: Record<string, Network> = {
 
 const DEFAULT_NETWORK = KNOWN_NETWORKS.devnet;
 
-function normalizeConnectedSites(value: unknown): ConnectedSitePermission[] {
-  if (!Array.isArray(value)) return [];
+function normalizeConnectedSites(value: unknown): { sites: ConnectedSitePermission[]; migrated: boolean } {
+  if (!Array.isArray(value)) return { sites: [], migrated: false };
 
-  return value.flatMap((entry) => {
+  let migrated = false;
+
+  const sites = value.flatMap((entry) => {
     if (typeof entry === 'string') {
       const now = Date.now();
+      migrated = true;
       return [{
         origin: entry,
         accounts: [],
@@ -38,6 +41,12 @@ function normalizeConnectedSites(value: unknown): ConnectedSitePermission[] {
     if (!entry || typeof entry !== 'object') return [];
     const candidate = entry as Partial<ConnectedSitePermission>;
     if (typeof candidate.origin !== 'string') return [];
+    const hasMissingFields =
+      !Array.isArray(candidate.accounts) ||
+      typeof candidate.chainId !== 'number' ||
+      typeof candidate.grantedAt !== 'number' ||
+      typeof candidate.lastUsedAt !== 'number';
+    if (hasMissingFields) migrated = true;
 
     return [{
       origin: candidate.origin,
@@ -49,6 +58,8 @@ function normalizeConnectedSites(value: unknown): ConnectedSitePermission[] {
       lastUsedAt: typeof candidate.lastUsedAt === 'number' ? candidate.lastUsedAt : Date.now(),
     }];
   });
+
+  return { sites, migrated };
 }
 
 export async function initStore(): Promise<void> {
@@ -60,7 +71,7 @@ export async function initStore(): Promise<void> {
     'txQueue',
   ]);
   if (!existing.accounts) {
-    const connectedSites = normalizeConnectedSites(existing.connectedSites);
+    const { sites: connectedSites } = normalizeConnectedSites(existing.connectedSites);
     await chrome.storage.local.set({
       network: DEFAULT_NETWORK,
       accounts: [],
@@ -71,14 +82,15 @@ export async function initStore(): Promise<void> {
     return;
   }
 
-  const connectedSites = normalizeConnectedSites(existing.connectedSites);
+  const { sites: connectedSites, migrated } = normalizeConnectedSites(existing.connectedSites);
 
   if (
     !existing.network ||
     existing.autoLockMinutes == null ||
     !existing.connectedSites ||
     !existing.txQueue ||
-    connectedSites.length !== (Array.isArray(existing.connectedSites) ? existing.connectedSites.length : 0)
+    connectedSites.length !== (Array.isArray(existing.connectedSites) ? existing.connectedSites.length : 0) ||
+    migrated
   ) {
     await chrome.storage.local.set({
       network: existing.network ?? DEFAULT_NETWORK,
@@ -101,7 +113,7 @@ export async function getWalletState(): Promise<WalletState> {
     network: data.network ?? DEFAULT_NETWORK,
     accounts: data.accounts ?? [],
     autoLockMinutes: data.autoLockMinutes ?? 15,
-    connectedSites: normalizeConnectedSites(data.connectedSites),
+    connectedSites: normalizeConnectedSites(data.connectedSites).sites,
     txQueue: data.txQueue ?? [],
   };
 }
@@ -175,7 +187,7 @@ export async function clearSessionState(): Promise<void> {
 
 export async function getConnectedSites(): Promise<ConnectedSitePermission[]> {
   const { connectedSites } = await chrome.storage.local.get('connectedSites');
-  return normalizeConnectedSites(connectedSites);
+  return normalizeConnectedSites(connectedSites).sites;
 }
 
 export async function addConnectedSite(site: ConnectedSitePermission): Promise<void> {
