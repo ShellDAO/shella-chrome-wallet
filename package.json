@@ -11,7 +11,7 @@
     "check:release-metadata": "node scripts/check-release-metadata.js",
     "release:bundle": "node scripts/package-release.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test tests/**/*.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint src --ext .ts",
     "clean": "rm -rf dist"
   },
