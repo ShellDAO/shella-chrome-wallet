@@ -33,6 +33,8 @@ import {
   upsertTxRecord,
 } from './store.js';
 import type {
+  ConnectedSitePermission,
+  DappRequestMessage,
   Network,
   SendTransactionParams,
   StoredAccount,
@@ -151,13 +153,26 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'GET_CONNECTED_SITES':
       return { sites: await getConnectedSites() };
     case 'ADD_CONNECTED_SITE':
-      await addConnectedSite(requireString(msg.origin, 'origin'));
+      await addConnectedSite({
+        origin: requireString(msg.origin, 'origin'),
+        accounts: [],
+        chainId: (await getNetwork()).chainId,
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+      });
       return { ok: true };
     case 'REMOVE_CONNECTED_SITE':
       await removeConnectedSite(requireString(msg.origin, 'origin'));
       return { ok: true };
     case 'GET_NODE_INFO':
       return getNodeInfoFromNode((await getNetwork()).rpcUrl);
+    case 'DAPP_REQUEST':
+      return handleDappRequest({
+        origin: requireString(msg.origin, 'origin'),
+        method: requireString(msg.method, 'method'),
+        params: Array.isArray(msg.params) ? msg.params : [],
+        interactive: Boolean(msg.interactive),
+      });
     default:
       throw new Error(`Unknown message type: ${msg.type}`);
   }
@@ -428,6 +443,136 @@ async function getNodeInfoFromNode(rpcUrl: string): Promise<WalletNodeInfo | nul
   }
 }
 
+async function handleDappRequest(message: DappRequestMessage): Promise<unknown> {
+  const origin = normalizeOrigin(message.origin);
+  const network = await getNetwork();
+  const accounts = await getAccounts();
+  const primaryAccount = accounts[0] ?? null;
+  const permission = await getConnectedPermission(origin);
+  const provider = buildProvider(network);
+
+  switch (message.method) {
+    case 'eth_requestAccounts': {
+      if (!primaryAccount) throw new Error('No wallet found');
+      if (!currentSigner) throw new Error('Wallet is locked');
+      if (!message.interactive) throw new Error('Interactive approval required');
+      const granted = buildConnectedSite(origin, primaryAccount.hexAddress, network.chainId, permission?.grantedAt);
+      await addConnectedSite(granted);
+      return granted.accounts;
+    }
+    case 'eth_accounts':
+      return permission?.accounts ?? [];
+    case 'eth_chainId':
+      return `0x${network.chainId.toString(16)}`;
+    case 'eth_blockNumber': {
+      const blockNumber = await provider.client.getBlockNumber();
+      return `0x${blockNumber.toString(16)}`;
+    }
+    case 'eth_getBalance': {
+      const [address] = normalizeArrayParams(message.params);
+      if (typeof address !== 'string') throw new Error('eth_getBalance requires an address');
+      const hexAddress = address.startsWith('0x') ? normalizeHexAddress(address) : toHexAddress(address);
+      const balance = await provider.client.getBalance({ address: hexAddress });
+      return `0x${balance.toString(16)}`;
+    }
+    case 'eth_sendTransaction': {
+      ensureConnected(permission, origin);
+      if (!currentSigner) throw new Error('Wallet is locked');
+      const [tx] = normalizeArrayParams(message.params);
+      if (!tx || typeof tx !== 'object') throw new Error('eth_sendTransaction requires a transaction object');
+      const candidate = tx as Record<string, unknown>;
+      const from = optionalString(candidate.from);
+      if (from && normalizeHexAddress(from) !== permission.accounts[0]) {
+        throw new Error('Requested from account is not permitted for this site');
+      }
+      return sendTransaction({
+        to: requireString(candidate.to, 'to'),
+        value: normalizeRpcValue(optionalString(candidate.value)),
+        data: optionalString(candidate.data) ?? optionalString(candidate.input),
+        gasLimit: optionalRpcNumber(candidate.gas) ?? optionalRpcNumber(candidate.gasLimit),
+        maxFeePerGas: optionalRpcNumber(candidate.maxFeePerGas),
+        maxPriorityFeePerGas: optionalRpcNumber(candidate.maxPriorityFeePerGas),
+      });
+    }
+    case 'eth_call': {
+      const [tx] = normalizeArrayParams(message.params);
+      if (!tx || typeof tx !== 'object') throw new Error('eth_call requires a transaction object');
+      const candidate = tx as Record<string, unknown>;
+      const to = requireString(candidate.to, 'to');
+      const data = normalizeData(optionalString(candidate.data) ?? optionalString(candidate.input));
+      const valueParam = optionalString(candidate.value);
+      const value = valueParam ? BigInt(valueParam) : undefined;
+      return provider.client.call({
+        to: normalizeHexAddress(to),
+        data,
+        value,
+      });
+    }
+    case 'wallet_switchEthereumChain': {
+      ensureConnected(permission, origin);
+      const [chainPayload] = normalizeArrayParams(message.params);
+      if (!chainPayload || typeof chainPayload !== 'object') {
+        throw new Error('wallet_switchEthereumChain requires a chain payload');
+      }
+      const chainIdHex = requireString((chainPayload as Record<string, unknown>).chainId, 'chainId');
+      const chainId = Number(BigInt(chainIdHex));
+      const nextNetwork = findKnownNetwork(chainId) ?? {
+        ...network,
+        chainId,
+      };
+      await setNetwork(nextNetwork);
+      await addConnectedSite(buildConnectedSite(origin, permission.accounts[0], nextNetwork.chainId, permission.grantedAt));
+      return null;
+    }
+    case 'wallet_addEthereumChain': {
+      if (!message.interactive) throw new Error('Interactive approval required');
+      const [chainPayload] = normalizeArrayParams(message.params);
+      if (!chainPayload || typeof chainPayload !== 'object') {
+        throw new Error('wallet_addEthereumChain requires a chain payload');
+      }
+      const candidate = chainPayload as Record<string, unknown>;
+      const chainId = Number(BigInt(requireString(candidate.chainId, 'chainId')));
+      const rpcUrls = candidate.rpcUrls;
+      if (!Array.isArray(rpcUrls) || typeof rpcUrls[0] !== 'string') {
+        throw new Error('wallet_addEthereumChain requires rpcUrls[0]');
+      }
+      const nextNetwork: Network = {
+        name: optionalString(candidate.chainName) ?? `Chain ${chainId}`,
+        chainId,
+        rpcUrl: rpcUrls[0],
+      };
+      await setNetwork(nextNetwork);
+      if (primaryAccount) {
+        await addConnectedSite(buildConnectedSite(origin, primaryAccount.hexAddress, nextNetwork.chainId, permission?.grantedAt));
+      }
+      return null;
+    }
+    case 'shella_getPqAddress':
+      return primaryAccount?.pqAddress ?? null;
+    case 'shella_sendPqTransaction': {
+      ensureConnected(permission, origin);
+      if (!currentSigner) throw new Error('Wallet is locked');
+      const [tx] = normalizeArrayParams(message.params);
+      if (!tx || typeof tx !== 'object') throw new Error('shella_sendPqTransaction requires a transaction object');
+      const candidate = tx as Record<string, unknown>;
+      const from = optionalString(candidate.from);
+      if (from && from !== primaryAccount?.pqAddress) {
+        throw new Error('Requested pq sender does not match the unlocked wallet');
+      }
+      return sendTransaction({
+        to: requireString(candidate.to, 'to'),
+        value: normalizeRpcValue(optionalString(candidate.value)),
+        data: optionalString(candidate.data),
+        gasLimit: optionalRpcNumber(candidate.gasLimit),
+        maxFeePerGas: optionalRpcNumber(candidate.maxFeePerGas),
+        maxPriorityFeePerGas: optionalRpcNumber(candidate.maxPriorityFeePerGas),
+      });
+    }
+    default:
+      throw new Error(`Unsupported dApp method: ${message.method}`);
+  }
+}
+
 function buildProvider(network: Network) {
   const chain = defineChain({
     id: network.chainId,
@@ -436,6 +581,75 @@ function buildProvider(network: Network) {
     rpcUrls: { default: { http: [network.rpcUrl] } },
   });
   return createShellProvider({ chain, rpcHttpUrl: network.rpcUrl });
+}
+
+function buildConnectedSite(
+  origin: string,
+  hexAddress: string,
+  chainId: number,
+  grantedAt: number = Date.now(),
+): ConnectedSitePermission {
+  const now = Date.now();
+  return {
+    origin,
+    accounts: [normalizeHexAddress(hexAddress)],
+    chainId,
+    grantedAt,
+    lastUsedAt: now,
+  };
+}
+
+async function getConnectedPermission(origin: string): Promise<ConnectedSitePermission | null> {
+  const sites = await getConnectedSites();
+  return sites.find((site) => site.origin === origin) ?? null;
+}
+
+function ensureConnected(
+  permission: ConnectedSitePermission | null,
+  origin: string,
+): asserts permission is ConnectedSitePermission {
+  if (!permission) {
+    throw new Error(`Site not connected: ${origin}`);
+  }
+}
+
+function normalizeOrigin(origin: string): string {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Only http and https origins are supported');
+    }
+    return parsed.origin;
+  } catch {
+    throw new Error('Origin must be a valid http(s) URL');
+  }
+}
+
+function normalizeArrayParams(params: unknown[] | undefined): unknown[] {
+  return Array.isArray(params) ? params : [];
+}
+
+function normalizeRpcValue(value: string | undefined): string {
+  if (!value) return '0';
+  return value;
+}
+
+function optionalRpcNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(BigInt(value));
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function findKnownNetwork(chainId: number): Network | null {
+  const knownNetworks: Network[] = [
+    { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
+    { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' },
+    { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
+  ];
+  return knownNetworks.find((network) => network.chainId === chainId) ?? null;
 }
 
 function parseKeystorePayload(keystoreJson: string): ShellEncryptedKey {
@@ -585,10 +799,16 @@ function toSafeErrorMessage(err: unknown): string {
     message === 'No wallet found' ||
     message === 'No wallet to export' ||
     message === 'Wallet is locked' ||
+    message === 'Interactive approval required' ||
     message === 'Recipient address is required' ||
     message === 'Recipient must be a pq1… or 0x… address' ||
     message === 'Calldata must be an even-length 0x-prefixed hex string' ||
     message === 'Network payload is invalid' ||
+    message.startsWith('Site not connected:') ||
+    message.startsWith('Unsupported dApp method:') ||
+    message === 'Origin must be a valid http(s) URL' ||
+    message === 'Requested from account is not permitted for this site' ||
+    message === 'Requested pq sender does not match the unlocked wallet' ||
     message.endsWith('is required') ||
     message.endsWith('must be a valid number')
   ) {
