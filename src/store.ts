@@ -14,7 +14,7 @@ import type {
 
 export const KNOWN_NETWORKS: Record<string, Network> = {
   devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
-  testnet: { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' },
+  testnet: { name: 'Shell Testnet', chainId: 10, rpcUrl: 'https://rpc.testnet.shell.network' },
   mainnet: { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
 };
 
