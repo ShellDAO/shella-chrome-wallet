@@ -6,7 +6,6 @@
  */
 
 import { MlDsa65Adapter, generateMlDsa65KeyPair } from 'shell-sdk/adapters';
-import { normalizeHexAddress } from 'shell-sdk/address';
 import { createShellProvider } from 'shell-sdk/provider';
 import { ShellSigner } from 'shell-sdk/signer';
 import { buildTransaction, buildTransferTransaction, hashTransaction } from 'shell-sdk/transactions';
@@ -191,15 +190,14 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
   }
 }
 
-async function createWallet(password: string): Promise<{ pqAddress: string; hexAddress: string }> {
+async function createWallet(password: string): Promise<{ pqAddress: string }> {
   const { publicKey: pk, secretKey: sk } = generateMlDsa65KeyPair();
   const adapter = MlDsa65Adapter.fromKeyPair(pk, sk);
   const signer = new ShellSigner('MlDsa65', adapter);
   const pqAddress = signer.getAddress();
-  const hexAddress = signer.getHexAddress();
 
   const keystore = await createKeystore(sk, pk, password, pqAddress, 'mldsa65');
-  const account: StoredAccount = { pqAddress, hexAddress, keystoreJson: JSON.stringify(keystore) };
+  const account: StoredAccount = { pqAddress, keystoreJson: JSON.stringify(keystore) };
   await addAccount(account);
 
   currentSigner = signer;
@@ -210,22 +208,21 @@ async function createWallet(password: string): Promise<{ pqAddress: string; hexA
   await scheduleAutoLock();
   sk.fill(0);
 
-  return { pqAddress, hexAddress };
+  return { pqAddress };
 }
 
 async function importKeystore(
   keystoreJson: string,
   password: string,
-): Promise<{ pqAddress: string; hexAddress: string }> {
+): Promise<{ pqAddress: string }> {
   const parsed = parseKeystorePayload(keystoreJson);
   const { secretKey, publicKey } = await decryptKeystore(parsed, password);
 
   const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey);
   const signer = new ShellSigner('MlDsa65', adapter);
   const pqAddress = signer.getAddress();
-  const hexAddress = signer.getHexAddress();
 
-  const account: StoredAccount = { pqAddress, hexAddress, keystoreJson: JSON.stringify(parsed) };
+  const account: StoredAccount = { pqAddress, keystoreJson: JSON.stringify(parsed) };
   await addAccount(account);
 
   currentSigner = signer;
@@ -233,7 +230,7 @@ async function importKeystore(
   await scheduleAutoLock();
   secretKey.fill(0);
 
-  return { pqAddress, hexAddress };
+  return { pqAddress };
 }
 
 async function unlockWallet(password: string): Promise<{ ok: boolean; pqAddress?: string }> {
@@ -273,8 +270,8 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
   try {
     const provider = buildProvider(wallet.network);
     const [balance, nonce, detectedChainId, nodeInfo] = await Promise.all([
-      provider.client.getBalance({ address: primaryAccount.hexAddress as `0x${string}` }),
-      provider.client.getTransactionCount({ address: primaryAccount.hexAddress as `0x${string}` }),
+      provider.client.getBalance({ address: primaryAccount.pqAddress as unknown as `0x${string}` }),
+      provider.client.getTransactionCount({ address: primaryAccount.pqAddress as unknown as `0x${string}` }),
       provider.client.getChainId(),
       getNodeInfoFromNode(wallet.network.rpcUrl).catch(() => null),
     ]);
@@ -306,8 +303,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
 async function getBalance(address: string): Promise<{ balance: string; formatted: string }> {
   const network = await getNetwork();
   const provider = buildProvider(network);
-  const hexAddr = address.startsWith('0x') ? (address as `0x${string}`) : toHexAddress(address);
-  const balance = await provider.client.getBalance({ address: hexAddr });
+  const balance = await provider.client.getBalance({ address: address as unknown as `0x${string}` });
   return { balance: balance.toString(), formatted: formatEther(balance) };
 }
 
@@ -316,12 +312,12 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
 
   const network = await getNetwork();
   const provider = buildProvider(network);
-  const from = currentSigner.getHexAddress();
+  const from = currentSigner.getAddress();
   const to = normalizeRecipient(params.to);
   const valueBigInt = parseEtherValue(params.value);
   const data = normalizeData(params.data);
 
-  const onChainNonce = await provider.client.getTransactionCount({ address: from });
+  const onChainNonce = await provider.client.getTransactionCount({ address: from as unknown as `0x${string}` });
   const nonce = await allocateNextNonce(from, onChainNonce);
   const tx = data === '0x'
     ? buildTransferTransaction({
@@ -354,7 +350,7 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
   await upsertTxRecord({
     txHash,
     from,
-    to: to.startsWith('0x') ? to : normalizeHexAddress(to),
+    to,
     value: valueBigInt.toString(),
     data,
     nonce,
@@ -384,8 +380,7 @@ async function getTxHistory(
     .filter((tx): tx is WalletTxRecord => tx !== null);
 
   const localTxs = (await getTxQueue()).filter((tx) => {
-    const normalized = address.startsWith('0x') ? address.toLowerCase() : toHexAddress(address).toLowerCase();
-    return tx.from.toLowerCase() === normalized || tx.to.toLowerCase() === normalized;
+    return tx.from.toLowerCase() === address.toLowerCase() || tx.to.toLowerCase() === address.toLowerCase();
   });
 
   const merged = new Map<string, WalletTxRecord>();
@@ -431,7 +426,7 @@ async function pollPendingTransactions(): Promise<void> {
   await scheduleTxPolling();
 }
 
-async function allocateNextNonce(from: `0x${string}`, onChainNonce: number): Promise<number> {
+async function allocateNextNonce(from: string, onChainNonce: number): Promise<number> {
   const txQueue = await getTxQueue();
   const pendingNonces = txQueue
     .filter((tx) => tx.status === 'pending' && tx.from.toLowerCase() === from.toLowerCase())
@@ -481,14 +476,13 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
         origin,
         createdAt: Date.now(),
         payload: {
-          account: primaryAccount.hexAddress,
           pqAddress: primaryAccount.pqAddress,
           chainId: network.chainId,
           networkName: network.name,
         },
       });
       if (!approved) throw new Error('Request rejected by user');
-      const granted = buildConnectedSite(origin, primaryAccount.hexAddress, network.chainId, permission?.grantedAt);
+      const granted = buildConnectedSite(origin, primaryAccount.pqAddress, network.chainId, permission?.grantedAt);
       await addConnectedSite(granted);
       return granted.accounts;
     }
@@ -503,8 +497,8 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
     case 'eth_getBalance': {
       const [address] = normalizeArrayParams(message.params);
       if (typeof address !== 'string') throw new Error('eth_getBalance requires an address');
-      const hexAddress = address.startsWith('0x') ? normalizeHexAddress(address) : toHexAddress(address);
-      const balance = await provider.client.getBalance({ address: hexAddress });
+      if (!address.startsWith('pq1')) throw new Error('eth_getBalance: address must be pq1… bech32m');
+      const balance = await provider.client.getBalance({ address: address as unknown as `0x${string}` });
       return `0x${balance.toString(16)}`;
     }
     case 'eth_sendTransaction': {
@@ -514,7 +508,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       if (!tx || typeof tx !== 'object') throw new Error('eth_sendTransaction requires a transaction object');
       const candidate = tx as Record<string, unknown>;
       const from = optionalString(candidate.from);
-      if (from && normalizeHexAddress(from) !== permission.accounts[0]) {
+      if (from && from !== permission.accounts[0]) {
         throw new Error('Requested from account is not permitted for this site');
       }
       const request = {
@@ -548,7 +542,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       const data = normalizeData(optionalString(candidate.data) ?? optionalString(candidate.input));
       const value = normalizeOptionalRpcBigInt(optionalString(candidate.value), 'eth_call.value');
       return provider.client.call({
-        to: normalizeHexAddress(to),
+        to: normalizeRecipient(to) as unknown as `0x${string}`,
         data,
         value,
       });
@@ -612,7 +606,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       if (!approved) throw new Error('Request rejected by user');
       await setNetwork(nextNetwork);
       if (primaryAccount) {
-        await addConnectedSite(buildConnectedSite(origin, primaryAccount.hexAddress, nextNetwork.chainId, permission?.grantedAt));
+        await addConnectedSite(buildConnectedSite(origin, primaryAccount.pqAddress, nextNetwork.chainId, permission?.grantedAt));
       }
       return null;
     }
@@ -668,14 +662,14 @@ function buildProvider(network: Network) {
 
 function buildConnectedSite(
   origin: string,
-  hexAddress: string,
+  pqAddress: string,
   chainId: number,
   grantedAt: number = Date.now(),
 ): ConnectedSitePermission {
   const now = Date.now();
   return {
     origin,
-    accounts: [normalizeHexAddress(hexAddress)],
+    accounts: [pqAddress],
     chainId,
     grantedAt,
     lastUsedAt: now,
@@ -855,8 +849,7 @@ function normalizeRemoteStatus(status: string | undefined): WalletTxRecord['stat
 
 function normalizeRecipient(address: string): string {
   if (!address) throw new Error('Recipient address is required');
-  if (address.startsWith('0x')) return normalizeHexAddress(address);
-  if (!address.startsWith('pq1')) throw new Error('Recipient must be a pq1… or 0x… address');
+  if (!address.startsWith('pq1')) throw new Error('Recipient must be a pq1… bech32m address');
   return address;
 }
 
@@ -911,11 +904,6 @@ function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function toHexAddress(pqAddress: string): `0x${string}` {
-  if (pqAddress.startsWith('0x')) return pqAddress as `0x${string}`;
-  return normalizeHexAddress(pqAddress);
-}
-
 function formatEther(wei: bigint): string {
   const eth = Number(wei) / 1e18;
   return eth.toFixed(6);
@@ -942,7 +930,7 @@ function toSafeErrorMessage(err: unknown): string {
     message === 'Interactive approval required' ||
     message === 'Request rejected by user' ||
     message === 'Recipient address is required' ||
-    message === 'Recipient must be a pq1… or 0x… address' ||
+    message === 'Recipient must be a pq1… bech32m address' ||
     message === 'Calldata must be an even-length 0x-prefixed hex string' ||
     message === 'Network payload is invalid' ||
     message === 'Approval request not found' ||

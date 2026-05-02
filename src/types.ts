@@ -6,13 +6,12 @@ export interface Network {
 
 export interface StoredAccount {
   pqAddress: string;
-  hexAddress: string;
   keystoreJson: string;
 }
 
 export interface ConnectedSitePermission {
   origin: string;
-  accounts: `0x${string}`[];
+  accounts: string[];
   chainId: number;
   grantedAt: number;
   lastUsedAt: number;

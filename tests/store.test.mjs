@@ -146,28 +146,28 @@ describe('store', () => {
   test('connected sites can be added and removed', async () => {
     await addConnectedSite({
       origin: 'https://app.shell.network',
-      accounts: ['0x123'],
+      accounts: ['pq1app'],
       chainId: 424242,
       grantedAt: 1,
       lastUsedAt: 2,
     });
     await addConnectedSite({
       origin: 'https://dapp.example.com',
-      accounts: ['0x456'],
+      accounts: ['pq1dapp'],
       chainId: 12345,
       grantedAt: 3,
       lastUsedAt: 4,
     });
     await addConnectedSite({
       origin: 'https://app.shell.network',
-      accounts: ['0x789'],
+      accounts: ['pq1updated'],
       chainId: 424242,
       grantedAt: 1,
       lastUsedAt: 5,
     }); // replace duplicate by origin
     const sites = await getConnectedSites();
     assert.equal(sites.length, 2);
-    assert.equal(sites.find((site) => site.origin === 'https://app.shell.network').accounts[0], '0x789');
+    assert.equal(sites.find((site) => site.origin === 'https://app.shell.network').accounts[0], 'pq1updated');
 
     await removeConnectedSite('https://dapp.example.com');
     assert.equal((await getConnectedSites()).length, 1);

@@ -34,7 +34,6 @@ type View =
 interface AppState {
   view: View;
   pqAddress: string;
-  hexAddress: string;
   balance: string;
   balanceFormatted: string;
   network: Network;
@@ -61,7 +60,6 @@ interface AppState {
 const state: AppState = {
   view: 'loading',
   pqAddress: '',
-  hexAddress: '',
   balance: '0',
   balanceFormatted: '0.000000',
   network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
@@ -386,7 +384,7 @@ function renderSend(): string {
       <button class="btn-back" id="btn-back">← Back</button>
       <h2>Send SHELL</h2>
       ${networkWarning ? `<div class="status-card status-card-warning">${networkWarning}</div>` : ''}
-      <label>To Address (pq1… or 0x…)
+      <label>To Address (pq1… bech32m)
         <input type="text" id="send-to" placeholder="pq1…" value="${state.sendTo}" />
       </label>
       <label>Amount (SHELL)
@@ -429,12 +427,6 @@ function renderReceive(): string {
         <span class="monospace address-full" id="full-addr">${state.pqAddress}</span>
       </div>
       <button id="btn-copy-full" class="btn-primary">Copy Address</button>
-      <div class="divider"></div>
-      <div class="address-box" style="margin-top:8px">
-        <span class="label" style="font-size:11px">Hex address (0x)</span>
-        <span class="monospace address-small">${truncate(state.hexAddress, 12, 10)}</span>
-        <button class="btn-copy" id="btn-copy-hex" title="Copy hex address">⧉</button>
-      </div>
     </div>
   `;
 }
@@ -442,7 +434,7 @@ function renderReceive(): string {
 function renderHistory(): string {
   const txItems = state.txHistory.length > 0
     ? state.txHistory.map((tx) => {
-        const isOutgoing = tx.from.toLowerCase() === state.hexAddress.toLowerCase();
+        const isOutgoing = tx.from.toLowerCase() === state.pqAddress.toLowerCase();
         const isBatch = tx.txType === '0x7e';
         const isSponsored = !!tx.paymaster;
         const dir = isBatch
@@ -667,11 +659,10 @@ function attachHandlers(): void {
     state.view = 'create-generating';
     render();
     try {
-      const res = await send<{ pqAddress: string; hexAddress: string }>('CREATE_WALLET', {
+      const res = await send<{ pqAddress: string }>('CREATE_WALLET', {
         password: pwd1,
       });
       state.pqAddress = res.pqAddress;
-      state.hexAddress = res.hexAddress;
       state.view = 'create-success';
       render();
     } catch (err) {
@@ -722,12 +713,11 @@ function attachHandlers(): void {
     state.view = 'create-generating';
     render();
     try {
-      const res = await send<{ pqAddress: string; hexAddress: string }>('IMPORT_KEYSTORE', {
+      const res = await send<{ pqAddress: string }>('IMPORT_KEYSTORE', {
         keystoreJson: state.pendingKeystoreJson,
         password: pwd,
       });
       state.pqAddress = res.pqAddress;
-      state.hexAddress = res.hexAddress;
       await refreshWalletData();
       state.view = 'wallet';
       render();
@@ -856,8 +846,8 @@ function attachHandlers(): void {
       render();
       return;
     }
-    if (!/^pq1|^0x/.test(to)) {
-      state.error = 'Recipient must be a pq1… or 0x… address';
+    if (!/^pq1/.test(to)) {
+      state.error = 'Recipient must be a pq1… bech32m address';
       render();
       return;
     }
@@ -902,7 +892,6 @@ function attachHandlers(): void {
 
   on('btn-copy-addr', 'click', () => copyText(state.pqAddress, 'Address copied'));
   on('btn-copy-full', 'click', () => copyText(state.pqAddress, 'Address copied'));
-  on('btn-copy-hex', 'click', () => copyText(state.hexAddress, 'Hex address copied'));
 
   on('btn-export-ks', 'click', async () => {
     try {
@@ -920,7 +909,6 @@ function attachHandlers(): void {
       Object.assign(state, {
         view: 'welcome',
         pqAddress: '',
-        hexAddress: '',
         balance: '0',
         balanceFormatted: '0.000000',
         detectedChainId: null,
@@ -1025,7 +1013,7 @@ function attachHandlers(): void {
 async function refreshBalance(): Promise<void> {
   if (!state.pqAddress) return;
   const res = await send<{ balance: string; formatted: string }>('GET_BALANCE', {
-    address: state.hexAddress || state.pqAddress,
+    address: state.pqAddress,
   });
   state.balance = res.balance;
   state.balanceFormatted = res.formatted;
@@ -1042,7 +1030,6 @@ async function refreshWalletData(): Promise<void> {
   state.nodeInfo = snapshot.nodeInfo ?? null;
   if (snapshot.primaryAccount) {
     state.pqAddress = snapshot.primaryAccount.pqAddress;
-    state.hexAddress = snapshot.primaryAccount.hexAddress;
   }
   if (snapshot.balance) {
     state.balance = snapshot.balance.raw;
@@ -1111,11 +1098,9 @@ async function boot(): Promise<void> {
     state.view = 'welcome';
   } else if (snapshot.locked) {
     state.pqAddress = snapshot.primaryAccount.pqAddress;
-    state.hexAddress = snapshot.primaryAccount.hexAddress;
     state.view = 'locked';
   } else {
     state.pqAddress = snapshot.primaryAccount.pqAddress;
-    state.hexAddress = snapshot.primaryAccount.hexAddress;
     if (snapshot.balance) {
       state.balance = snapshot.balance.raw;
       state.balanceFormatted = snapshot.balance.formatted;

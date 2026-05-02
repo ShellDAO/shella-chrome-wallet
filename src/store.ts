@@ -51,7 +51,7 @@ function normalizeConnectedSites(value: unknown): { sites: ConnectedSitePermissi
     return [{
       origin: candidate.origin,
       accounts: Array.isArray(candidate.accounts)
-        ? candidate.accounts.filter((item): item is `0x${string}` => typeof item === 'string' && item.startsWith('0x'))
+        ? candidate.accounts.filter((item): item is string => typeof item === 'string' && item.startsWith('pq1'))
         : [],
       chainId: typeof candidate.chainId === 'number' ? candidate.chainId : DEFAULT_NETWORK.chainId,
       grantedAt: typeof candidate.grantedAt === 'number' ? candidate.grantedAt : Date.now(),

@@ -142,7 +142,6 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
 
   const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
   assert.match(created.pqAddress, /^pq1/);
-  assert.match(created.hexAddress, /^0x[0-9a-f]+$/);
 
   const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
   assert.equal(snapshot.locked, false);
@@ -164,7 +163,6 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
     password: 'correct horse battery',
   });
   assert.equal(imported.pqAddress, created.pqAddress);
-  assert.equal(imported.hexAddress, created.hexAddress);
 });
 
 test('send transaction records local pending activity', async () => {
@@ -175,13 +173,13 @@ test('send transaction records local pending activity', async () => {
 
   const sent = await handleMessage({
     type: 'SEND_TX',
-    to: '0x1111111111111111111111111111111111111111',
+    to: created.pqAddress,
     value: '1.25',
     data: '0x',
   });
   const sentSecond = await handleMessage({
     type: 'SEND_TX',
-    to: '0x2222222222222222222222222222222222222222',
+    to: created.pqAddress,
     value: '0.5',
     data: '0x',
   });
@@ -294,12 +292,12 @@ test('dapp provider grants site access and proxies read methods', async () => {
   });
   await resolveLatestApproval(true, approvalsBeforeConnect);
   const accounts = await accountsPromise;
-  assert.deepEqual(accounts, [created.hexAddress]);
+  assert.deepEqual(accounts, [created.pqAddress]);
 
   const connected = await handleMessage({ type: 'GET_CONNECTED_SITES' });
   assert.equal(connected.sites.length, 1);
   assert.equal(connected.sites[0].origin, 'https://app.shell.org');
-  assert.deepEqual(connected.sites[0].accounts, [created.hexAddress]);
+  assert.deepEqual(connected.sites[0].accounts, [created.pqAddress]);
 
   const chainId = await handleMessage({
     type: 'DAPP_REQUEST',
@@ -357,8 +355,8 @@ test('dapp provider can send a transaction for a connected site', async () => {
     origin: 'https://swap.example.com',
     method: 'eth_sendTransaction',
     params: [{
-      from: created.hexAddress,
-      to: '0x3333333333333333333333333333333333333333',
+      from: created.pqAddress,
+      to: created.pqAddress,
       value: '0xde0b6b3a7640000',
       data: '0x',
     }],
