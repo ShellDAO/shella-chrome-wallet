@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.22.0] — 2026-05-06
+
+### Added
+- `decodedInput` field in `WalletTxRecord` with decoded proof amendment payload
+  (`layer`, `blockNumber`, `startBlock`, `endBlock`, `nSigs`, `compressedSize`,
+  `originalSize`, `settlementTxHash`) for `starkReward` transactions (v0.22+)
+
+### Changed
+- `background.ts`: maps `decodedInput` from remote tx data for `starkReward` txs
+- Aligns with shell-chain v0.22.0 and shell-sdk v0.8.0
+
 ## [0.20.0] — 2026-05-06
 
 ### Changed
