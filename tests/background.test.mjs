@@ -46,6 +46,7 @@ let txCounter = 0;
 const createdAlarms = [];
 const clearedAlarms = [];
 const createdWindows = [];
+let shellTxHistoryResult = { transactions: [], total: 0 };
 
 globalThis.chrome = {
   runtime: {
@@ -83,7 +84,7 @@ globalThis.fetch = async (url, init) => {
     eth_chainId: '0x67932',
     eth_blockNumber: '0x2a',
     eth_call: '0x',
-    shell_getTransactionsByAddress: { transactions: [], total: 0 },
+    shell_getTransactionsByAddress: shellTxHistoryResult,
   };
 
   if (body.method === 'shell_sendTransaction') {
@@ -167,6 +168,7 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
 
 test('send transaction records local pending activity', async () => {
   txCounter = 0;
+  shellTxHistoryResult = { transactions: [], total: 0 };
   resetAlarmState();
   await handleMessage({ type: 'RESET_WALLET' });
   const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
@@ -198,6 +200,58 @@ test('send transaction records local pending activity', async () => {
   assert.equal(history.txs[0].source, 'local');
   assert.equal(history.txs[1].source, 'local');
   assert.deepEqual(history.txs.map((tx) => tx.nonce).sort((a, b) => a - b), [0, 1]);
+});
+
+test('remote transaction history preserves reward metadata', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  shellTxHistoryResult = {
+    total: 1,
+    transactions: [{
+      hash: '0x' + 'a'.repeat(64),
+      from: 'pq1prover',
+      to: created.pqAddress,
+      value: '50000000000000000000',
+      input: '0x',
+      timestamp: 1234,
+      status: 'confirmed',
+      blockNumber: '0x2a',
+      type: '0x0',
+      shellType: 'starkReward',
+      rewardKind: 'starkReward',
+      rewardLayer: '0x2',
+      rewardSourceHash: '0x' + 'b'.repeat(64),
+      originalSize: '0x2710',
+      compressedSize: '0x80',
+    }],
+  };
+
+  const history = await handleMessage({
+    type: 'GET_TX_HISTORY',
+    address: created.pqAddress,
+    page: 0,
+  });
+
+  assert.equal(history.total, 1);
+  assert.equal(history.txs.length, 1);
+  assert.deepEqual({
+    shellType: history.txs[0].shellType,
+    rewardKind: history.txs[0].rewardKind,
+    rewardLayer: history.txs[0].rewardLayer,
+    rewardSourceHash: history.txs[0].rewardSourceHash,
+    originalSize: history.txs[0].originalSize,
+    compressedSize: history.txs[0].compressedSize,
+  }, {
+    shellType: 'starkReward',
+    rewardKind: 'starkReward',
+    rewardLayer: '0x2',
+    rewardSourceHash: '0x' + 'b'.repeat(64),
+    originalSize: '0x2710',
+    compressedSize: '0x80',
+  });
 });
 
 test('wrong password is reported safely and without internal details', async () => {

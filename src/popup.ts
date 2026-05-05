@@ -436,9 +436,9 @@ function renderHistory(): string {
     ? state.txHistory.map((tx) => {
         const isOutgoing = tx.from.toLowerCase() === state.pqAddress.toLowerCase();
         const readableType = formatTxHistoryType(tx);
-        const isBatch = readableType.startsWith('⚡ Batch');
+        const isBatch = isAaBatchTx(tx);
         const isSponsored = !!tx.paymaster;
-        const dir = isBatch ? readableType : (isOutgoing ? '↑ Sent' : '↓ Received');
+        const dir = readableType !== 'Transfer' ? readableType : (isOutgoing ? '↑ Sent' : '↓ Received');
         const val = isBatch ? '' : formatDisplayValue(tx.value) + ' SHELL';
         const hash = tx.txHash ? truncate(tx.txHash, 8, 6) : '–';
         const sponsoredBadge = isSponsored
@@ -467,11 +467,15 @@ function renderHistory(): string {
   `;
 }
 
-function formatTxHistoryType(tx: WalletTxRecord): string {
+function isAaBatchTx(tx: WalletTxRecord): boolean {
+  return tx.shellType === 'aaBatch' || tx.txType === '0x7e';
+}
+
+export function formatTxHistoryType(tx: WalletTxRecord): string {
   const shellType = tx.shellType ?? tx.rewardKind;
   if (shellType === 'blockGasReward') return 'Block Reward';
   if (shellType === 'starkReward') return 'STARK Reward';
-  if (shellType === 'aaBatch' || tx.txType === '0x7e') {
+  if (isAaBatchTx(tx)) {
     return `⚡ Batch${tx.innerCallCount != null ? ` (${tx.innerCallCount} calls)` : ''}`;
   }
   if (shellType === 'contractCreate') return 'Contract Create';
@@ -479,7 +483,7 @@ function formatTxHistoryType(tx: WalletTxRecord): string {
   return 'Transfer';
 }
 
-function formatTxHistoryLabel(tx: WalletTxRecord): string {
+export function formatTxHistoryLabel(tx: WalletTxRecord): string {
   const type = formatTxHistoryType(tx);
   if (type !== 'Transfer') return type;
   return `${formatDisplayValue(tx.value)} SHELL`;
