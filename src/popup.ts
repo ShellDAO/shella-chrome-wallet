@@ -314,7 +314,7 @@ function renderWallet(): string {
         ${pendingTxs.map((tx) => `
           <div class="pending-item">
             <span class="monospace">${truncate(tx.txHash, 8, 6)}</span>
-            <span>${tx.txType === '0x7e' ? '⚡ Batch' : formatDisplayValue(tx.value) + ' SHELL'}</span>
+            <span>${formatTxHistoryLabel(tx)}</span>
           </div>
         `).join('')}
       </div>
@@ -435,11 +435,10 @@ function renderHistory(): string {
   const txItems = state.txHistory.length > 0
     ? state.txHistory.map((tx) => {
         const isOutgoing = tx.from.toLowerCase() === state.pqAddress.toLowerCase();
-        const isBatch = tx.txType === '0x7e';
+        const readableType = formatTxHistoryType(tx);
+        const isBatch = isAaBatchTx(tx);
         const isSponsored = !!tx.paymaster;
-        const dir = isBatch
-          ? `⚡ Batch${tx.innerCallCount != null ? ` (${tx.innerCallCount} calls)` : ''}`
-          : (isOutgoing ? '↑ Sent' : '↓ Received');
+        const dir = readableType !== 'Transfer' ? readableType : (isOutgoing ? '↑ Sent' : '↓ Received');
         const val = isBatch ? '' : formatDisplayValue(tx.value) + ' SHELL';
         const hash = tx.txHash ? truncate(tx.txHash, 8, 6) : '–';
         const sponsoredBadge = isSponsored
@@ -466,6 +465,28 @@ function renderHistory(): string {
       <div class="tx-list">${txItems}</div>
     </div>
   `;
+}
+
+function isAaBatchTx(tx: WalletTxRecord): boolean {
+  return tx.shellType === 'aaBatch' || tx.txType === '0x7e';
+}
+
+export function formatTxHistoryType(tx: WalletTxRecord): string {
+  const shellType = tx.shellType ?? tx.rewardKind;
+  if (shellType === 'blockGasReward') return 'Block Reward';
+  if (shellType === 'starkReward') return 'STARK Reward';
+  if (isAaBatchTx(tx)) {
+    return `⚡ Batch${tx.innerCallCount != null ? ` (${tx.innerCallCount} calls)` : ''}`;
+  }
+  if (shellType === 'contractCreate') return 'Contract Create';
+  if (shellType === 'contractCall') return 'Contract Call';
+  return 'Transfer';
+}
+
+export function formatTxHistoryLabel(tx: WalletTxRecord): string {
+  const type = formatTxHistoryType(tx);
+  if (type !== 'Transfer') return type;
+  return `${formatDisplayValue(tx.value)} SHELL`;
 }
 
 function renderSettings(): string {

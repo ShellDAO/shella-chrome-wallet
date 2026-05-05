@@ -34,6 +34,18 @@ export interface WalletTxRecord {
   source: 'local' | 'remote';
   /** tx_type value (0x2 = standard, 0x7e = AA batch) */
   txType?: string;
+  /** Product-level Shell RPC type, e.g. transfer, aaBatch, blockGasReward. */
+  shellType?: string | null;
+  /** System reward kind when this is a reward transaction. */
+  rewardKind?: string | null;
+  /** STARK layer for prover rewards, hex encoded by RPC. */
+  rewardLayer?: string | null;
+  /** Block/range/artifact hash used to derive a system reward. */
+  rewardSourceHash?: string | null;
+  /** Original byte size used for STARK compression accounting. */
+  originalSize?: string | null;
+  /** Compressed byte size used for STARK compression accounting. */
+  compressedSize?: string | null;
   /** Paymaster address if this was a sponsored tx */
   paymaster?: string | null;
   /** Number of inner calls if this is an AA batch tx */

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0] — 2026-05-06
+
+### Changed
+- Preserve Shell reward metadata returned by address-history RPC summaries in wallet transaction records.
+- Display reward-aware history labels for block gas rewards, STARK rewards, AA batches, contract creates/calls, and transfers.
+- Align extension release metadata with package version `0.20.0`.
+
 ## [0.19.0] — 2026-04-26
 
 ### Changed

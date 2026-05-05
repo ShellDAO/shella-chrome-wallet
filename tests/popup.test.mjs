@@ -138,4 +138,58 @@ describe('popup', async () => {
     assert.equal(parseOptionalNumber('abc'), undefined);
     assert.equal(parseOptionalNumber('0'), 0);
   });
+
+  test('transaction history labels display reward, batch, and transfer types', async () => {
+    const mod = await import('../dist/popup.js');
+    const { formatTxHistoryType, formatTxHistoryLabel } = mod;
+
+    assert.equal(formatTxHistoryType({
+      txHash: '0x1',
+      from: 'pq1from',
+      to: 'pq1to',
+      value: '0',
+      data: '0x',
+      createdAt: 1,
+      updatedAt: 1,
+      status: 'confirmed',
+      source: 'remote',
+      shellType: 'blockGasReward',
+    }), 'Block Reward');
+    assert.equal(formatTxHistoryLabel({
+      txHash: '0x2',
+      from: 'pq1from',
+      to: 'pq1to',
+      value: '0',
+      data: '0x',
+      createdAt: 1,
+      updatedAt: 1,
+      status: 'confirmed',
+      source: 'remote',
+      shellType: 'starkReward',
+    }), 'STARK Reward');
+    assert.equal(formatTxHistoryType({
+      txHash: '0x3',
+      from: 'pq1from',
+      to: 'pq1to',
+      value: '0',
+      data: '0x',
+      createdAt: 1,
+      updatedAt: 1,
+      status: 'confirmed',
+      source: 'remote',
+      txType: '0x7e',
+      innerCallCount: 2,
+    }), '⚡ Batch (2 calls)');
+    assert.equal(formatTxHistoryLabel({
+      txHash: '0x4',
+      from: 'pq1from',
+      to: 'pq1to',
+      value: '1000000000000000000',
+      data: '0x',
+      createdAt: 1,
+      updatedAt: 1,
+      status: 'confirmed',
+      source: 'remote',
+    }), '1.000000 SHELL');
+  });
 });

@@ -9,7 +9,7 @@ Chrome wallet for [Shell Chain](https://github.com/LucienSong/shell-chain) — q
 - 🔒 **Auto-lock** — configurable inactivity timeout via chrome.alarms; unlocked signer stays only in service-worker memory and browser restart re-locks the wallet
 - 💸 **Send transactions** — input recipient + amount → build → sign → broadcast via shell-sdk
 - 📥 **Receive** — display full address with one-click copy
-- 📜 **Transaction history** — query `shell_getTransactionsByAddress` and display recent activity
+- 📜 **Transaction history** — query `shell_getTransactionsByAddress`, display reward-aware Shell tx labels, and preserve STARK reward metadata from address history summaries
 - 🌐 **Multi-network** — switch between devnet / testnet / mainnet or configure a custom RPC URL
 - 🔌 **dApp connectivity foundation** — injected `window.shella` + EIP-1193-compatible `window.ethereum` bridge for connect / read-only RPC / chain switching
 - ⚡ **Manifest V3** — service worker background, strict CSP, no eval
