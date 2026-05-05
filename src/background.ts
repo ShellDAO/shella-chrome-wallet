@@ -820,6 +820,8 @@ function normalizeRemoteTxRecord(value: unknown): WalletTxRecord | null {
 
   // AA bundle info
   const txType = optionalString(tx.type);
+  const shellType = optionalString(tx.shellType);
+  const rewardKind = optionalString(tx.rewardKind);
   const bundle = tx.aa_bundle as Record<string, unknown> | null | undefined;
   const innerCalls = Array.isArray(bundle?.inner_calls) ? bundle!.inner_calls : null;
   const paymaster = bundle?.paymaster ? optionalString(bundle.paymaster as unknown) : null;
@@ -836,6 +838,12 @@ function normalizeRemoteTxRecord(value: unknown): WalletTxRecord | null {
     blockNumber: optionalString(tx.blockNumber) ?? null,
     source: 'remote',
     txType: txType ?? undefined,
+    shellType: shellType ?? null,
+    rewardKind: rewardKind ?? null,
+    rewardLayer: optionalString(tx.rewardLayer) ?? null,
+    rewardSourceHash: optionalString(tx.rewardSourceHash) ?? null,
+    originalSize: optionalString(tx.originalSize) ?? null,
+    compressedSize: optionalString(tx.compressedSize) ?? null,
     paymaster: paymaster ?? null,
     innerCallCount: innerCalls != null ? innerCalls.length : null,
   };
