@@ -844,6 +844,9 @@ function normalizeRemoteTxRecord(value: unknown): WalletTxRecord | null {
     rewardSourceHash: optionalString(tx.rewardSourceHash) ?? null,
     originalSize: optionalString(tx.originalSize) ?? null,
     compressedSize: optionalString(tx.compressedSize) ?? null,
+    decodedInput: typeof tx.decodedInput === 'object' && tx.decodedInput !== null
+      ? tx.decodedInput as WalletTxRecord['decodedInput']
+      : null,
     paymaster: paymaster ?? null,
     innerCallCount: innerCalls != null ? innerCalls.length : null,
   };

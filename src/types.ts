@@ -46,6 +46,17 @@ export interface WalletTxRecord {
   originalSize?: string | null;
   /** Compressed byte size used for STARK compression accounting. */
   compressedSize?: string | null;
+  /** Decoded proof amendment payload for starkReward txs (v0.22+). */
+  decodedInput?: {
+    layer: number;
+    blockNumber: number;
+    startBlock: number;
+    endBlock: number;
+    nSigs: number;
+    compressedSize: number;
+    originalSize: number;
+    settlementTxHash?: string | null;
+  } | null;
   /** Paymaster address if this was a sponsored tx */
   paymaster?: string | null;
   /** Number of inner calls if this is an AA batch tx */
