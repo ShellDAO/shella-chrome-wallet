@@ -46,6 +46,8 @@ import type {
 
 const AUTO_LOCK_ALARM = 'shella-auto-lock';
 const TX_POLL_ALARM = 'shella-tx-poll';
+// Approval requests expire after this many ms to prevent stale popup resolution.
+const APPROVAL_TTL_MS = 10 * 60 * 1000;
 
 let currentSigner: ShellSigner | null = null;
 const pendingApprovals = new Map<
@@ -55,6 +57,11 @@ const pendingApprovals = new Map<
     resolve: (approved: boolean) => void;
   }
 >();
+
+// In-memory nonce tracker: prevents concurrent sendTransaction calls from
+// allocating the same nonce before the first is committed to txQueue storage.
+// Maps normalised-lowercase address → highest nonce already allocated this session.
+const allocatedNonces = new Map<string, number>();
 
 chrome.runtime.onInstalled.addListener(async () => {
   await initStore();
@@ -270,8 +277,8 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
   try {
     const provider = buildProvider(wallet.network);
     const [balance, nonce, detectedChainId, nodeInfo] = await Promise.all([
-      provider.client.getBalance({ address: primaryAccount.pqAddress as unknown as `0x${string}` }),
-      provider.client.getTransactionCount({ address: primaryAccount.pqAddress as unknown as `0x${string}` }),
+      provider.client.getBalance({ address: asPqAddress(primaryAccount.pqAddress, 'getBalance') }),
+      provider.client.getTransactionCount({ address: asPqAddress(primaryAccount.pqAddress, 'getTransactionCount') }),
       provider.client.getChainId(),
       getNodeInfoFromNode(wallet.network.rpcUrl).catch(() => null),
     ]);
@@ -303,7 +310,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
 async function getBalance(address: string): Promise<{ balance: string; formatted: string }> {
   const network = await getNetwork();
   const provider = buildProvider(network);
-  const balance = await provider.client.getBalance({ address: address as unknown as `0x${string}` });
+  const balance = await provider.client.getBalance({ address: asPqAddress(address, 'getBalance') });
   return { balance: balance.toString(), formatted: formatEther(balance) };
 }
 
@@ -317,7 +324,7 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
   const valueBigInt = parseEtherValue(params.value);
   const data = normalizeData(params.data);
 
-  const onChainNonce = await provider.client.getTransactionCount({ address: from as unknown as `0x${string}` });
+  const onChainNonce = await provider.client.getTransactionCount({ address: asPqAddress(from, 'getTransactionCount') });
   const nonce = await allocateNextNonce(from, onChainNonce);
   const tx = data === '0x'
     ? buildTransferTransaction({
@@ -427,17 +434,21 @@ async function pollPendingTransactions(): Promise<void> {
 }
 
 async function allocateNextNonce(from: string, onChainNonce: number): Promise<number> {
+  const key = from.toLowerCase();
   const txQueue = await getTxQueue();
   const pendingNonces = txQueue
-    .filter((tx) => tx.status === 'pending' && tx.from.toLowerCase() === from.toLowerCase())
+    .filter((tx) => tx.status === 'pending' && tx.from.toLowerCase() === key)
     .map((tx) => tx.nonce)
     .filter((nonce): nonce is number => nonce != null)
     .sort((a, b) => b - a);
 
-  if (pendingNonces.length === 0) {
-    return onChainNonce;
-  }
-  return Math.max(onChainNonce, pendingNonces[0] + 1);
+  // Also consider nonces already handed out this session but not yet in the queue
+  // (covers the race window between allocateNextNonce returning and upsertTxRecord writing).
+  const inFlight = allocatedNonces.get(key) ?? -1;
+  const queueMax = pendingNonces.length > 0 ? pendingNonces[0] : -1;
+  const next = Math.max(onChainNonce, queueMax + 1, inFlight + 1);
+  allocatedNonces.set(key, next);
+  return next;
 }
 
 async function getNodeInfoFromNode(rpcUrl: string): Promise<WalletNodeInfo | null> {
@@ -498,7 +509,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       const [address] = normalizeArrayParams(message.params);
       if (typeof address !== 'string') throw new Error('eth_getBalance requires an address');
       if (!address.startsWith('pq1')) throw new Error('eth_getBalance: address must be pq1… bech32m');
-      const balance = await provider.client.getBalance({ address: address as unknown as `0x${string}` });
+      const balance = await provider.client.getBalance({ address: asPqAddress(address, 'eth_getBalance') });
       return `0x${balance.toString(16)}`;
     }
     case 'eth_sendTransaction': {
@@ -542,7 +553,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       const data = normalizeData(optionalString(candidate.data) ?? optionalString(candidate.input));
       const value = normalizeOptionalRpcBigInt(optionalString(candidate.value), 'eth_call.value');
       return provider.client.call({
-        to: normalizeRecipient(to) as unknown as `0x${string}`,
+        to: asPqAddress(normalizeRecipient(to), 'eth_call.to'),
         data,
         value,
       });
@@ -720,6 +731,10 @@ function getApprovalRequest(requestId: string): ApprovalRequest {
 function resolveApprovalRequest(requestId: string, approved: boolean): { ok: true } {
   const pending = pendingApprovals.get(requestId);
   if (!pending) throw new Error('Approval request not found');
+  if (Date.now() - pending.request.createdAt > APPROVAL_TTL_MS) {
+    pendingApprovals.delete(requestId);
+    throw new Error('Approval request has expired');
+  }
   pendingApprovals.delete(requestId);
   pending.resolve(approved);
   return { ok: true };
@@ -925,6 +940,17 @@ function parseEtherValue(value: string): bigint {
   return parseEther(value as `${number}`);
 }
 
+/**
+ * Assert that an address is pq1… bech32m before the cast to `0x${string}` needed by viem.
+ * The Shell provider handles pq1 addresses natively; the cast only satisfies TypeScript types.
+ */
+function asPqAddress(address: string, context: string): `0x${string}` {
+  if (!address.startsWith('pq1')) {
+    throw new Error(`${context}: expected pq1… bech32m address, got "${address.slice(0, 10)}…"`);
+  }
+  return address as unknown as `0x${string}`;
+}
+
 function toSafeErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : 'Wallet operation failed';
 
@@ -945,6 +971,7 @@ function toSafeErrorMessage(err: unknown): string {
     message === 'Calldata must be an even-length 0x-prefixed hex string' ||
     message === 'Network payload is invalid' ||
     message === 'Approval request not found' ||
+    message === 'Approval request has expired' ||
     message === 'Unknown chain. Use wallet_addEthereumChain first.' ||
     message.startsWith('Site not connected:') ||
     message.startsWith('Unsupported dApp method:') ||

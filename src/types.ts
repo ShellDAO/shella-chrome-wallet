@@ -122,7 +122,8 @@ export interface AaBatchInnerCall {
   to: string;
   value: string;
   data: string;
-  gas_limit: number;
+  /** Gas limit — may be a decimal number or a hex string (0x…) from the SDK. */
+  gas_limit: number | string;
 }
 
 export interface ApprovalRequest {
