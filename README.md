@@ -36,7 +36,7 @@ dist/                  Built extension (load as unpacked)
 ## Development
 
 ```bash
-# Requires shell-sdk to be checked out at ../shell-sdk (sibling directory)
+# Local development pulls shell-sdk via npm or a local file path; see package.json
 npm install
 npm run build        # esbuild → dist/popup.js + dist/background.js
 npm run build:prod   # minified production bundle
