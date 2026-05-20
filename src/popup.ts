@@ -384,8 +384,8 @@ function renderSend(): string {
       <button class="btn-back" id="btn-back">← Back</button>
       <h2>Send SHELL</h2>
       ${networkWarning ? `<div class="status-card status-card-warning">${networkWarning}</div>` : ''}
-      <label>To Address (pq1… bech32m)
-        <input type="text" id="send-to" placeholder="pq1…" value="${state.sendTo}" />
+      <label>To Address (0x… hex)
+        <input type="text" id="send-to" placeholder="0x…" value="${state.sendTo}" />
       </label>
       <label>Amount (SHELL)
         <input type="number" id="send-value" placeholder="0.0" step="any" min="0" value="${state.sendValue}" />
@@ -867,8 +867,8 @@ function attachHandlers(): void {
       render();
       return;
     }
-    if (!/^pq1/.test(to)) {
-      state.error = 'Recipient must be a pq1… bech32m address';
+    if (!/^0x[0-9a-fA-F]{64}$/.test(to)) {
+      state.error = 'Recipient must be a 0x + 64-char hex Shell address';
       render();
       return;
     }

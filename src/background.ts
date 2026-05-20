@@ -508,7 +508,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
     case 'eth_getBalance': {
       const [address] = normalizeArrayParams(message.params);
       if (typeof address !== 'string') throw new Error('eth_getBalance requires an address');
-      if (!address.startsWith('pq1')) throw new Error('eth_getBalance: address must be pq1… bech32m');
+      if (!/^0x[0-9a-fA-F]{64}$/.test(address)) throw new Error('eth_getBalance: address must be 0x + 64-char hex');
       const balance = await provider.client.getBalance({ address: asPqAddress(address, 'eth_getBalance') });
       return `0x${balance.toString(16)}`;
     }
@@ -875,7 +875,7 @@ function normalizeRemoteStatus(status: string | undefined): WalletTxRecord['stat
 
 function normalizeRecipient(address: string): string {
   if (!address) throw new Error('Recipient address is required');
-  if (!address.startsWith('pq1')) throw new Error('Recipient must be a pq1… bech32m address');
+  if (!/^0x[0-9a-fA-F]{64}$/.test(address)) throw new Error('Recipient must be a 0x + 64-char hex Shell address');
   return address;
 }
 
@@ -941,12 +941,12 @@ function parseEtherValue(value: string): bigint {
 }
 
 /**
- * Assert that an address is pq1… bech32m before the cast to `0x${string}` needed by viem.
- * The Shell provider handles pq1 addresses natively; the cast only satisfies TypeScript types.
+ * Assert that an address is a valid 0x Shell address before the cast to `0x${string}` needed by viem.
+ * The Shell provider handles 0x hex addresses natively; the cast only satisfies TypeScript types.
  */
 function asPqAddress(address: string, context: string): `0x${string}` {
-  if (!address.startsWith('pq1')) {
-    throw new Error(`${context}: expected pq1… bech32m address, got "${address.slice(0, 10)}…"`);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(address)) {
+    throw new Error(`${context}: expected 0x + 64-char hex Shell address, got "${address.slice(0, 12)}…"`);
   }
   return address as unknown as `0x${string}`;
 }
@@ -967,7 +967,7 @@ function toSafeErrorMessage(err: unknown): string {
     message === 'Interactive approval required' ||
     message === 'Request rejected by user' ||
     message === 'Recipient address is required' ||
-    message === 'Recipient must be a pq1… bech32m address' ||
+    message === 'Recipient must be a 0x + 64-char hex Shell address' ||
     message === 'Calldata must be an even-length 0x-prefixed hex string' ||
     message === 'Network payload is invalid' ||
     message === 'Approval request not found' ||
