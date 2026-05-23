@@ -4,7 +4,7 @@ Chrome wallet for [Shell Chain](https://github.com/LucienSong/shell-chain) — q
 
 ## Features
 
-- 🔐 **ML-DSA-65 key management** — generate or import post-quantum keypairs; addresses in `pq1...` bech32m format
+- 🔐 **ML-DSA-65 key management** — generate or import post-quantum keypairs; addresses in canonical Shell format (`0x` + 64 lowercase hex, BLAKE3-derived)
 - 🔑 **Password-protected keystore** — argon2id KDF + xchacha20-poly1305 encryption; compatible with Shell CLI keystore format
 - 🔒 **Auto-lock** — configurable inactivity timeout via chrome.alarms; unlocked signer stays only in service-worker memory and browser restart re-locks the wallet
 - 💸 **Send transactions** — input recipient + amount → build → sign → broadcast via shell-sdk
