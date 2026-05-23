@@ -84,7 +84,23 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// WALLET-M2: Privileged operations must only be invoked from extension pages (popup/options),
+// not from content scripts. Content scripts always have sender.tab set.
+const PRIVILEGED_MESSAGE_TYPES = new Set([
+  'CREATE_WALLET', 'IMPORT_KEYSTORE', 'UNLOCK_WALLET', 'LOCK_WALLET', 'RESET_WALLET',
+  'EXPORT_KEYSTORE', 'SEND_TX', 'SIGN',
+]);
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const type = (msg as { type?: string }).type ?? '';
+  // sender may be undefined in test environments; treat undefined as extension page
+  const fromExtensionPage = !sender?.tab; // content scripts always have sender.tab
+
+  if (PRIVILEGED_MESSAGE_TYPES.has(type) && !fromExtensionPage) {
+    sendResponse({ ok: false, error: 'Unauthorized' });
+    return true;
+  }
+
   handleMessage(msg as { type: string; [key: string]: unknown })
     .then(sendResponse)
     .catch((err: unknown) => {
@@ -199,7 +215,9 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
 
 async function createWallet(password: string): Promise<{ pqAddress: string }> {
   const { publicKey: pk, secretKey: sk } = generateMlDsa65KeyPair();
-  const adapter = MlDsa65Adapter.fromKeyPair(pk, sk);
+  // WALLET-H1: pass an owned copy into the adapter so that zeroing sk below
+  // does not corrupt the live signer's key buffer.
+  const adapter = MlDsa65Adapter.fromKeyPair(pk, sk.slice());
   const signer = new ShellSigner('MlDsa65', adapter);
   const pqAddress = signer.getAddress();
 
@@ -213,7 +231,7 @@ async function createWallet(password: string): Promise<{ pqAddress: string }> {
     unlockedAt: Date.now(),
   });
   await scheduleAutoLock();
-  sk.fill(0);
+  sk.fill(0); // zero ephemeral local copy; adapter holds its own copy
 
   return { pqAddress };
 }
@@ -225,7 +243,9 @@ async function importKeystore(
   const parsed = parseKeystorePayload(keystoreJson);
   const { secretKey, publicKey } = await decryptKeystore(parsed, password);
 
-  const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey);
+  // WALLET-H1: pass an owned copy into the adapter so that zeroing secretKey below
+  // does not corrupt the live signer's key buffer.
+  const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey.slice());
   const signer = new ShellSigner('MlDsa65', adapter);
   const pqAddress = signer.getAddress();
 
@@ -235,7 +255,7 @@ async function importKeystore(
   currentSigner = signer;
   await setSessionState({ unlockedPqAddress: pqAddress, unlockedAt: Date.now() });
   await scheduleAutoLock();
-  secretKey.fill(0);
+  secretKey.fill(0); // zero ephemeral local copy; adapter holds its own copy
 
   return { pqAddress };
 }
@@ -247,12 +267,14 @@ async function unlockWallet(password: string): Promise<{ ok: boolean; pqAddress?
   const account = accounts[0];
   const { secretKey, publicKey } = await decryptKeystore(account.keystoreJson, password);
 
-  const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey);
+  // WALLET-H1: pass an owned copy into the adapter so that zeroing secretKey below
+  // does not corrupt the live signer's key buffer.
+  const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey.slice());
   currentSigner = new ShellSigner('MlDsa65', adapter);
 
   await setSessionState({ unlockedPqAddress: account.pqAddress, unlockedAt: Date.now() });
   await scheduleAutoLock();
-  secretKey.fill(0);
+  secretKey.fill(0); // zero ephemeral local copy; adapter holds its own copy
 
   return { ok: true, pqAddress: account.pqAddress };
 }
@@ -602,7 +624,8 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       const nextNetwork: Network = {
         name: optionalString(candidate.chainName) ?? `Chain ${chainId}`,
         chainId,
-        rpcUrl: rpcUrls[0],
+        // WALLET-H2: validate scheme and host before storing or using the URL.
+        rpcUrl: validateRpcUrl(rpcUrls[0], 'rpcUrls[0]'),
       };
       const approved = await requestUserApproval({
         kind: 'add-chain',
@@ -692,13 +715,17 @@ async function getConnectedPermission(origin: string): Promise<ConnectedSitePerm
   return sites.find((site) => site.origin === origin) ?? null;
 }
 
+// WALLET-L1: use cryptographically secure RNG for all request/approval IDs.
+function generateRequestId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function requestUserApproval(
   input: Omit<ApprovalRequest, 'id'>,
 ): Promise<boolean> {
-  const requestId =
-    typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `approval-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const requestId = generateRequestId();
 
   const request: ApprovalRequest = { id: requestId, ...input };
 
@@ -896,8 +923,37 @@ function validateNetwork(value: unknown): Network {
   return {
     name: requireString(network.name, 'network.name'),
     chainId: requireNumber(network.chainId, 'network.chainId'),
-    rpcUrl: requireString(network.rpcUrl, 'network.rpcUrl'),
+    rpcUrl: validateRpcUrl(requireString(network.rpcUrl, 'network.rpcUrl'), 'network.rpcUrl'),
   };
+}
+
+// WALLET-H2: Validate that an RPC URL uses an approved scheme and is not a
+// private/loopback address (except localhost which is permitted for dev use).
+function validateRpcUrl(url: string, field: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`${field} must be a valid URL`);
+  }
+
+  const { protocol, hostname } = parsed;
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+  if (protocol !== 'https:' && !(protocol === 'http:' && isLocalhost)) {
+    throw new Error(`${field} must use https (or http for localhost only)`);
+  }
+
+  // Reject private IP ranges that are not localhost.
+  if (!isLocalhost) {
+    const privateRangePattern =
+      /^(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|169\.254\.\d+\.\d+)$/;
+    if (privateRangePattern.test(hostname)) {
+      throw new Error(`${field} must not point to a private IP address`);
+    }
+  }
+
+  return url;
 }
 
 function requirePassword(value: unknown): string {

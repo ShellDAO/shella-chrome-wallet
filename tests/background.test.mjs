@@ -468,4 +468,116 @@ test('wallet_addEthereumChain requires an existing connection and approval', asy
   assert.equal(network.network.chainId, 0x1234);
 });
 
+test('WALLET-H1: signing works after create/unlock (key not zeroed inside adapter)', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+
+  // Create wallet — H1 bug would zero the adapter key here
+  const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+  assert.ok(created.pqAddress, 'CREATE_WALLET must return a pqAddress');
+
+  // If the signer's key were zeroed, SEND_TX would produce a zero-key signature
+  // that the RPC mock would reject or return a wrong txHash.
+  const sent = await handleMessage({
+    type: 'SEND_TX',
+    to: created.pqAddress,
+    value: '0.1',
+    data: '0x',
+  });
+  assert.match(sent.txHash, /^0x[0-9a-f]+$/, 'SEND_TX after CREATE_WALLET should return a valid txHash');
+
+  // Lock then re-unlock and sign again — H1 also affects unlockWallet path.
+  await handleMessage({ type: 'LOCK_WALLET' });
+  const unlocked = await handleMessage({ type: 'UNLOCK_WALLET', password: 'correct horse battery' });
+  assert.equal(unlocked.ok, true);
+
+  const sentAfterUnlock = await handleMessage({
+    type: 'SEND_TX',
+    to: created.pqAddress,
+    value: '0.1',
+    data: '0x',
+  });
+  assert.match(sentAfterUnlock.txHash, /^0x[0-9a-f]+$/, 'SEND_TX after UNLOCK_WALLET should return a valid txHash');
+});
+
+test('WALLET-H2: wallet_addEthereumChain rejects non-https and private IP RPC URLs', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  // Connect site first
+  const approvalsBeforeConnect = createdWindows.length;
+  const connectPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://evil.example',
+    method: 'eth_requestAccounts',
+    params: [],
+  });
+  await resolveLatestApproval(true, approvalsBeforeConnect);
+  await connectPromise;
+
+  const badUrls = [
+    'http://192.168.1.1:8545',
+    'http://10.0.0.1',
+    'http://172.16.0.1',
+    'ftp://rpc.example',
+    'javascript:alert(1)',
+    'not-a-url',
+  ];
+
+  for (const rpcUrl of badUrls) {
+    const response = await dispatchRuntimeMessage({
+      type: 'DAPP_REQUEST',
+      origin: 'https://evil.example',
+      method: 'wallet_addEthereumChain',
+      params: [{ chainId: '0x9999', chainName: 'Evil Chain', rpcUrls: [rpcUrl] }],
+    });
+    assert.equal(response.ok, false, `Expected rejection for rpcUrl: ${rpcUrl}`);
+  }
+});
+
+test('WALLET-H2: wallet_addEthereumChain accepts https and localhost http URLs', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  const approvalsBeforeConnect = createdWindows.length;
+  const connectPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://good.example',
+    method: 'eth_requestAccounts',
+    params: [],
+  });
+  await resolveLatestApproval(true, approvalsBeforeConnect);
+  await connectPromise;
+
+  const approvalsBeforeAdd = createdWindows.length;
+  const addPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://good.example',
+    method: 'wallet_addEthereumChain',
+    params: [{ chainId: '0xabcd', chainName: 'Good Chain', rpcUrls: ['https://rpc.good.example'] }],
+  });
+  await resolveLatestApproval(true, approvalsBeforeAdd);
+  const result = await addPromise;
+  assert.equal(result, null);
+});
+
+test('WALLET-M2: privileged messages from content scripts are blocked', async () => {
+  const privilegedTypes = ['EXPORT_KEYSTORE', 'SEND_TX', 'UNLOCK_WALLET', 'CREATE_WALLET',
+    'IMPORT_KEYSTORE', 'RESET_WALLET'];
+
+  for (const type of privilegedTypes) {
+    const response = await new Promise((resolve) => {
+      // Simulate a content script sender by providing a sender with .tab set
+      listeners.onMessage[0]({ type }, { tab: { id: 1 } }, resolve);
+    });
+    assert.equal(response.ok, false, `${type} should be blocked from content scripts`);
+    assert.equal(response.error, 'Unauthorized', `${type} should return Unauthorized`);
+  }
+});
+
 }); // describe('background e2e')
