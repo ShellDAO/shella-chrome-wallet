@@ -155,10 +155,22 @@ function render(): void {
     settings: renderSettings,
     'approval-request': renderApprovalRequest,
   };
-  app().innerHTML = `
-    <div id="toast" class="toast" style="display:none"></div>
-    ${views[state.view]?.() ?? renderLoading()}
-  `;
+  
+  const appElement = app();
+  appElement.textContent = '';
+  
+  // Create toast element safely
+  const toastDiv = document.createElement('div');
+  toastDiv.id = 'toast';
+  toastDiv.className = 'toast';
+  toastDiv.style.display = 'none';
+  appElement.appendChild(toastDiv);
+  
+  // Create container for view content
+  const viewContainer = document.createElement('div');
+  viewContainer.innerHTML = views[state.view]?.() ?? renderLoading();
+  appElement.appendChild(viewContainer);
+  
   attachHandlers();
 }
 
@@ -512,7 +524,7 @@ function renderSettings(): string {
       <div class="section-title">Network</div>
       <select id="network-select" class="select-input">
         <option value="devnet" ${state.network.name === 'Shell Devnet' ? 'selected' : ''}>Shell Devnet (424242)</option>
-        <option value="testnet" ${state.network.name === 'Shell Testnet' ? 'selected' : ''}>Shell Testnet (12345)</option>
+        <option value="testnet" ${state.network.name === 'Shell Testnet' ? 'selected' : ''}>Shell Testnet (10)</option>
         <option value="mainnet" ${state.network.name === 'Shell Mainnet' ? 'selected' : ''}>Shell Mainnet (100000)</option>
         <option value="custom">Custom RPC…</option>
       </select>
@@ -817,7 +829,7 @@ function attachHandlers(): void {
       const val = quickNetSelect.value;
       const quickNetworks: Record<string, { name: string; chainId: number; rpcUrl: string }> = {
         devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
-        testnet: { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' },
+        testnet: { name: 'Shell Testnet', chainId: 10, rpcUrl: 'https://rpc.testnet.shell.network' },
         mainnet: { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
       };
       const net = quickNetworks[val];
@@ -980,7 +992,7 @@ function attachHandlers(): void {
       }
       const networks: Record<string, { name: string; chainId: number; rpcUrl: string }> = {
         devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
-        testnet: { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' },
+        testnet: { name: 'Shell Testnet', chainId: 10, rpcUrl: 'https://rpc.testnet.shell.network' },
         mainnet: { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
       };
       const net = networks[val];
