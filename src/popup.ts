@@ -600,6 +600,32 @@ function renderApprovalRequest(): string {
         <div class="inner-calls-list">${callsHtml}</div>
       </div>
     `;
+  } else if (request.kind === 'add-chain' || request.kind === 'switch-chain') {
+    // WALLET-H2: for chain operations, always show chain ID, network name, and
+    // RPC URL host prominently so users can spot a malicious RPC endpoint.
+    const rpcUrl = typeof request.payload.rpcUrl === 'string' ? request.payload.rpcUrl : '';
+    let rpcHost = rpcUrl;
+    try { rpcHost = new URL(rpcUrl).host; } catch { /* keep raw value */ }
+    detailsHtml = `
+      <div class="approval-card">
+        <div class="approval-row">
+          <span class="approval-key">Network</span>
+          <span class="approval-value">${String(request.payload.networkName ?? '')}</span>
+        </div>
+        <div class="approval-row">
+          <span class="approval-key">Chain ID</span>
+          <span class="approval-value monospace">${String(request.payload.chainId ?? '')}</span>
+        </div>
+        <div class="approval-row">
+          <span class="approval-key">RPC Host</span>
+          <span class="approval-value monospace" style="font-weight:bold">${rpcHost}</span>
+        </div>
+        <div class="approval-row">
+          <span class="approval-key">Requesting site</span>
+          <span class="approval-value monospace">${request.origin}</span>
+        </div>
+      </div>
+    `;
   } else {
     detailsHtml = `
       <div class="approval-card">
