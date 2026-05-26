@@ -142,7 +142,7 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
   await handleMessage({ type: 'RESET_WALLET' });
 
   const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
-  assert.match(created.pqAddress, /^pq1/);
+  assert.match(created.pqAddress, /^0x[0-9a-f]{64}$/);
 
   const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
   assert.equal(snapshot.locked, false);

@@ -18,8 +18,16 @@ function makeEl(id = '') {
     style: { display: '' },
     value: '',
     files: null,
+    children: [],
     _listeners: {},
     addEventListener(ev, fn) { this._listeners[ev] = fn; },
+    appendChild(child) {
+      this.children.push(child);
+      if (child.id) domElements.set(child.id, child);
+      this.innerHTML += child.id
+        ? `<div id="${child.id}" class="${child.className ?? ''}">${child.innerHTML ?? ''}</div>`
+        : (child.innerHTML ?? '');
+    },
     dispatchEvent() {},
   };
 }
@@ -36,6 +44,7 @@ globalThis.document = {
     style: {}, href: '', download: '', tagName: 'a',
     click() {}, select() {}, value: '',
     addEventListener() {},
+    appendChild() {},
   }),
   body: { appendChild() {}, removeChild() {} },
 };
