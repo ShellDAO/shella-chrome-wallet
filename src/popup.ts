@@ -12,6 +12,7 @@ import type {
   WalletSnapshot,
   WalletTxRecord,
 } from './types.js';
+import { KNOWN_NETWORKS } from './store.js';
 
 type View =
   | 'loading'
@@ -319,6 +320,15 @@ function renderWallet(): string {
        </span>`
     : '';
 
+  // Node info panel — shown when shell_getNodeInfo succeeds.
+  const nodeInfoHtml = state.nodeInfo
+    ? `<div class="node-info-card">
+        <span class="node-info-item" title="Node version">📦 ${state.nodeInfo.version}</span>
+        <span class="node-info-item" title="Block height">🧱 #${state.nodeInfo.block_height.toLocaleString()}</span>
+        <span class="node-info-item" title="Peer count">🔗 ${state.nodeInfo.peer_count} peer${state.nodeInfo.peer_count === 1 ? '' : 's'}</span>
+      </div>`
+    : '';
+
   const pendingHtml = pendingTxs.length > 0
     ? `
       <div class="pending-card">
@@ -348,9 +358,10 @@ function renderWallet(): string {
     <div class="wallet-view">
       <div class="wallet-header">
         <select id="quick-net-select" class="quick-net-select" title="Switch network">
-          <option value="devnet" ${state.network.name === 'Shell Devnet' ? 'selected' : ''}>⬡ Devnet</option>
-          <option value="testnet" ${state.network.name === 'Shell Testnet' ? 'selected' : ''}>⬡ Testnet</option>
-          <option value="mainnet" ${state.network.name === 'Shell Mainnet' ? 'selected' : ''}>⬡ Mainnet</option>
+          <option value="devnet" ${state.network.name === KNOWN_NETWORKS.devnet.name ? 'selected' : ''}>⬡ Devnet</option>
+          <option value="localdev" ${state.network.name === KNOWN_NETWORKS.localdev.name ? 'selected' : ''}>⬡ Testnet (local)</option>
+          <option value="testnet" ${state.network.name === KNOWN_NETWORKS.testnet.name ? 'selected' : ''}>⬡ Testnet</option>
+          <option value="mainnet" ${state.network.name === KNOWN_NETWORKS.mainnet.name ? 'selected' : ''}>⬡ Mainnet</option>
         </select>
         ${storageProfileHtml}
         <button class="btn-icon" id="btn-settings" title="Settings">⚙</button>
@@ -370,6 +381,7 @@ function renderWallet(): string {
         <span>${state.detectedChainId == null ? 'RPC unavailable' : `RPC chain: ${state.detectedChainId}`}</span>
         <span>${state.nonce == null ? 'Nonce unavailable' : `Nonce: ${state.nonce}`}</span>
       </div>
+      ${nodeInfoHtml}
       ${networkWarning ? `<div class="status-card status-card-warning">${networkWarning}</div>` : ''}
       <div class="action-row">
         <button class="btn-action" id="btn-send">
@@ -523,9 +535,10 @@ function renderSettings(): string {
 
       <div class="section-title">Network</div>
       <select id="network-select" class="select-input">
-        <option value="devnet" ${state.network.name === 'Shell Devnet' ? 'selected' : ''}>Shell Devnet (424242)</option>
-        <option value="testnet" ${state.network.name === 'Shell Testnet' ? 'selected' : ''}>Shell Testnet (10)</option>
-        <option value="mainnet" ${state.network.name === 'Shell Mainnet' ? 'selected' : ''}>Shell Mainnet (100000)</option>
+        <option value="devnet" ${state.network.name === KNOWN_NETWORKS.devnet.name ? 'selected' : ''}>Shell Devnet (${KNOWN_NETWORKS.devnet.chainId})</option>
+        <option value="localdev" ${state.network.name === KNOWN_NETWORKS.localdev.name ? 'selected' : ''}>Shell Testnet — local (${KNOWN_NETWORKS.localdev.chainId}, localhost)</option>
+        <option value="testnet" ${state.network.name === KNOWN_NETWORKS.testnet.name ? 'selected' : ''}>Shell Testnet (${KNOWN_NETWORKS.testnet.chainId})</option>
+        <option value="mainnet" ${state.network.name === KNOWN_NETWORKS.mainnet.name ? 'selected' : ''}>Shell Mainnet (${KNOWN_NETWORKS.mainnet.chainId})</option>
         <option value="custom">Custom RPC…</option>
       </select>
       <div id="custom-rpc-section" style="display:none">
@@ -827,12 +840,7 @@ function attachHandlers(): void {
   if (quickNetSelect) {
     quickNetSelect.addEventListener('change', async () => {
       const val = quickNetSelect.value;
-      const quickNetworks: Record<string, { name: string; chainId: number; rpcUrl: string }> = {
-        devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
-        testnet: { name: 'Shell Testnet', chainId: 10, rpcUrl: 'https://rpc.testnet.shell.network' },
-        mainnet: { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
-      };
-      const net = quickNetworks[val];
+      const net = KNOWN_NETWORKS[val];
       if (net) {
         try {
           await send('SET_NETWORK', { network: net });
@@ -990,12 +998,7 @@ function attachHandlers(): void {
         if (sec) sec.style.display = 'block';
         return;
       }
-      const networks: Record<string, { name: string; chainId: number; rpcUrl: string }> = {
-        devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
-        testnet: { name: 'Shell Testnet', chainId: 10, rpcUrl: 'https://rpc.testnet.shell.network' },
-        mainnet: { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network' },
-      };
-      const net = networks[val];
+      const net = KNOWN_NETWORKS[val];
       if (net) {
         try {
           await send('SET_NETWORK', { network: net });
