@@ -54,13 +54,7 @@ function algorithmIdFromKeyType(keyType: string): number {
 }
 
 function validateKeystoreAddress(ek: ShellEncryptedKey, publicKey: Uint8Array): void {
-  let algorithmId: number;
-  try {
-    algorithmId = algorithmIdFromKeyType(ek.key_type);
-  } catch {
-    return;
-  }
-  const expected = deriveShellAddressFromPublicKey(publicKey, algorithmId);
+  const expected = deriveShellAddressFromPublicKey(publicKey, algorithmIdFromKeyType(ek.key_type));
   if (ek.address.toLowerCase() !== expected) {
     throw new Error('Keystore address does not match public key');
   }
