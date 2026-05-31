@@ -83,6 +83,15 @@ const state: AppState = {
   approvalRequest: null,
 };
 
+function escapeHtml(value: unknown): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function send<T = unknown>(type: string, data: Record<string, unknown> = {}): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type, ...data }, (response: T & { error?: string }) => {
@@ -598,18 +607,18 @@ function renderApprovalRequest(): string {
             <div class="inner-call-index">#${i + 1}</div>
             <div class="approval-row">
               <span class="approval-key">To</span>
-              <span class="approval-value monospace">${call.to}</span>
+              <span class="approval-value monospace">${escapeHtml(call.to)}</span>
             </div>
             <div class="approval-row">
               <span class="approval-key">Value</span>
-              <span class="approval-value">${formatDisplayValue(call.value || '0')} SHELL</span>
+              <span class="approval-value">${escapeHtml(formatDisplayValue(call.value || '0'))} SHELL</span>
             </div>
             <div class="approval-row">
               <span class="approval-key">Gas</span>
-              <span class="approval-value">${call.gas_limit}</span>
+              <span class="approval-value">${escapeHtml(call.gas_limit)}</span>
             </div>
             ${call.data && call.data !== '0x'
-              ? `<div class="approval-row"><span class="approval-key">Data</span><span class="approval-value monospace" style="word-break:break-all">${call.data.slice(0, 32)}…</span></div>`
+              ? `<div class="approval-row"><span class="approval-key">Data</span><span class="approval-value monospace" style="word-break:break-all">${escapeHtml(call.data.slice(0, 32))}…</span></div>`
               : ''}
           </div>
         `).join('')
@@ -621,7 +630,7 @@ function renderApprovalRequest(): string {
           <span class="badge badge-batch">⚡ AA Batch (${innerCalls.length} call${innerCalls.length !== 1 ? 's' : ''})</span>
           ${isSponsored ? `<span class="badge badge-sponsored">⚡ Sponsored</span>` : ''}
         </div>
-        ${isSponsored ? `<div class="approval-row"><span class="approval-key">Paymaster</span><span class="approval-value monospace">${paymaster}</span></div>` : ''}
+        ${isSponsored ? `<div class="approval-row"><span class="approval-key">Paymaster</span><span class="approval-value monospace">${escapeHtml(paymaster)}</span></div>` : ''}
         <div class="inner-calls-list">${callsHtml}</div>
       </div>
     `;
@@ -635,19 +644,19 @@ function renderApprovalRequest(): string {
       <div class="approval-card">
         <div class="approval-row">
           <span class="approval-key">Network</span>
-          <span class="approval-value">${String(request.payload.networkName ?? '')}</span>
+          <span class="approval-value">${escapeHtml(request.payload.networkName ?? '')}</span>
         </div>
         <div class="approval-row">
           <span class="approval-key">Chain ID</span>
-          <span class="approval-value monospace">${String(request.payload.chainId ?? '')}</span>
+          <span class="approval-value monospace">${escapeHtml(request.payload.chainId ?? '')}</span>
         </div>
         <div class="approval-row">
           <span class="approval-key">RPC Host</span>
-          <span class="approval-value monospace" style="font-weight:bold">${rpcHost}</span>
+          <span class="approval-value monospace" style="font-weight:bold">${escapeHtml(rpcHost)}</span>
         </div>
         <div class="approval-row">
           <span class="approval-key">Requesting site</span>
-          <span class="approval-value monospace">${request.origin}</span>
+          <span class="approval-value monospace">${escapeHtml(request.origin)}</span>
         </div>
       </div>
     `;
@@ -657,8 +666,8 @@ function renderApprovalRequest(): string {
         ${Object.entries(request.payload)
           .map(([key, value]) => `
             <div class="approval-row">
-              <span class="approval-key">${key}</span>
-              <span class="approval-value monospace">${String(value)}</span>
+              <span class="approval-key">${escapeHtml(key)}</span>
+              <span class="approval-value monospace">${escapeHtml(value)}</span>
             </div>
           `)
           .join('')}
@@ -670,8 +679,8 @@ function renderApprovalRequest(): string {
     <div class="view-form">
       <div class="logo">🛡️</div>
       <h2>Approve Request</h2>
-      <p class="hint">${request.origin}</p>
-      <div class="status-card status-card-warning">This site is requesting: <strong>${request.kind}</strong></div>
+      <p class="hint">${escapeHtml(request.origin)}</p>
+      <div class="status-card status-card-warning">This site is requesting: <strong>${escapeHtml(request.kind)}</strong></div>
       ${detailsHtml}
       ${state.error ? `<div class="error">${state.error}</div>` : ''}
       <button id="btn-approval-approve" class="btn-primary">Approve</button>
