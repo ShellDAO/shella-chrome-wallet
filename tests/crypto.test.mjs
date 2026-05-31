@@ -74,4 +74,26 @@ describe('crypto', () => {
     const result = await decryptKeystore(JSON.stringify(ks), 'pass12345678');
     assert.deepEqual(Array.from(result.secretKey), Array.from(sk));
   });
+
+  test('decryptKeystore does not truncate canonical secret keys that end with the public key', async () => {
+    const pk = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]);
+    const sk = new Uint8Array([0x01, 0x02, 0x03, 0x04, ...pk]);
+    const ks = await createKeystore(sk, pk, 'pass12345678', addressFor(pk));
+
+    const result = await decryptKeystore(ks, 'pass12345678');
+
+    assert.deepEqual(Array.from(result.secretKey), Array.from(sk));
+  });
+
+  test('decryptKeystore still imports unknown future key_type strings', async () => {
+    const sk = new Uint8Array(8).fill(7);
+    const pk = new Uint8Array(8).fill(8);
+    const ks = await createKeystore(sk, pk, 'pass12345678', addressFor(pk));
+    ks.key_type = 'future-pq-algorithm';
+
+    const result = await decryptKeystore(ks, 'pass12345678');
+
+    assert.deepEqual(Array.from(result.secretKey), Array.from(sk));
+    assert.deepEqual(Array.from(result.publicKey), Array.from(pk));
+  });
 });
