@@ -69,7 +69,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  currentSigner = null;
+  disposeCurrentSigner();
   await clearSessionState();
   await pollPendingTransactions();
 });
@@ -128,9 +128,19 @@ async function scheduleTxPolling(): Promise<void> {
 }
 
 async function lockWallet(): Promise<void> {
-  currentSigner = null;
+  disposeCurrentSigner();
   await clearSessionState();
   chrome.alarms.clear(AUTO_LOCK_ALARM);
+}
+
+function disposeCurrentSigner(): void {
+  currentSigner?.dispose();
+  currentSigner = null;
+}
+
+function replaceCurrentSigner(signer: ShellSigner): void {
+  disposeCurrentSigner();
+  currentSigner = signer;
 }
 
 export async function handleMessage(msg: { type: string; [key: string]: unknown }): Promise<unknown> {
@@ -225,7 +235,7 @@ async function createWallet(password: string): Promise<{ pqAddress: string }> {
   const account: StoredAccount = { pqAddress, keystoreJson: JSON.stringify(keystore) };
   await addAccount(account);
 
-  currentSigner = signer;
+  replaceCurrentSigner(signer);
   await setSessionState({
     unlockedPqAddress: pqAddress,
     unlockedAt: Date.now(),
@@ -252,7 +262,7 @@ async function importKeystore(
   const account: StoredAccount = { pqAddress, keystoreJson: JSON.stringify(parsed) };
   await addAccount(account);
 
-  currentSigner = signer;
+  replaceCurrentSigner(signer);
   await setSessionState({ unlockedPqAddress: pqAddress, unlockedAt: Date.now() });
   await scheduleAutoLock();
   secretKey.fill(0); // zero ephemeral local copy; adapter holds its own copy
@@ -270,7 +280,7 @@ async function unlockWallet(password: string): Promise<{ ok: boolean; pqAddress?
   // WALLET-H1: pass an owned copy into the adapter so that zeroing secretKey below
   // does not corrupt the live signer's key buffer.
   const adapter = MlDsa65Adapter.fromKeyPair(publicKey, secretKey.slice());
-  currentSigner = new ShellSigner('MlDsa65', adapter);
+  replaceCurrentSigner(new ShellSigner('MlDsa65', adapter));
 
   await setSessionState({ unlockedPqAddress: account.pqAddress, unlockedAt: Date.now() });
   await scheduleAutoLock();
@@ -340,6 +350,9 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
   if (!currentSigner) throw new Error('Wallet is locked');
 
   const network = await getNetwork();
+  if (params.expectedChainId !== undefined && params.expectedChainId !== network.chainId) {
+    throw new Error(`Network changed during approval: expected ${params.expectedChainId}, got ${network.chainId}`);
+  }
   const provider = buildProvider(network);
   const from = currentSigner.getAddress();
   const to = normalizeRecipient(params.to);
@@ -565,7 +578,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
         },
       });
       if (!approved) throw new Error('Request rejected by user');
-      return sendTransaction(request);
+      return sendTransaction({ ...request, expectedChainId: network.chainId });
     }
     case 'eth_call': {
       const [tx] = normalizeArrayParams(message.params);
@@ -645,7 +658,8 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
       return null;
     }
     case 'shella_getPqAddress':
-      return primaryAccount?.pqAddress ?? null;
+      ensureConnected(permission, origin);
+      return permission.accounts[0] ?? null;
     case 'shella_sendPqTransaction': {
       ensureConnected(permission, origin);
       if (!currentSigner) throw new Error('Wallet is locked');
@@ -677,7 +691,7 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
         },
       });
       if (!approved) throw new Error('Request rejected by user');
-      return sendTransaction(request);
+      return sendTransaction({ ...request, expectedChainId: network.chainId });
     }
     default:
       throw new Error(`Unsupported dApp method: ${message.method}`);
@@ -1014,6 +1028,7 @@ function toSafeErrorMessage(err: unknown): string {
     message === 'Password must be at least 8 characters' ||
     message === 'Incorrect password or corrupted keystore' ||
     message === 'Public key mismatch — wrong password or corrupt keystore' ||
+    message === 'Keystore address does not match public key' ||
     message === 'Keystore JSON is invalid' ||
     message === 'Keystore payload must be a JSON object' ||
     message.startsWith('Keystore is missing required field:') ||

@@ -293,7 +293,7 @@ test('tampered keystore and startup relock are enforced', async () => {
     password: 'correct horse battery',
   });
   assert.equal(tamperedResponse.ok, false);
-  assert.equal(tamperedResponse.error, 'Public key mismatch — wrong password or corrupt keystore');
+  assert.equal(tamperedResponse.error, 'Keystore address does not match public key');
 
   await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
   assert.equal((await handleMessage({ type: 'CHECK_LOCKED' })).locked, false);

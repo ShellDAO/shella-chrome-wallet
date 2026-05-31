@@ -108,6 +108,7 @@ export interface SendTransactionParams {
   gasLimit?: number;
   maxFeePerGas?: number;
   maxPriorityFeePerGas?: number;
+  expectedChainId?: number;
 }
 
 export interface DappRequestMessage {
