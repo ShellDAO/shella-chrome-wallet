@@ -10,8 +10,9 @@ import { createShellProvider } from 'shell-sdk/provider';
 import { ShellSigner } from 'shell-sdk/signer';
 import { buildTransaction, buildTransferTransaction, hashTransaction } from 'shell-sdk/transactions';
 import type { ShellEncryptedKey } from 'shell-sdk/types';
+import { deriveAccount, generateMnemonic, mnemonicToSeed, validateHdMnemonic } from 'shell-sdk/hdwallet';
 import { defineChain, parseEther } from 'viem';
-import { createKeystore, decryptKeystore } from './crypto.js';
+import { createKeystore, decryptKeystore, decryptHdSeed, encryptHdSeed, encryptMnemonic, decryptMnemonic } from './crypto.js';
 import {
   KNOWN_NETWORKS,
   addAccount as addStoredAccount,
@@ -21,6 +22,7 @@ import {
   getAccounts,
   getAutoLockMinutes,
   getConnectedSites,
+  getHdStore,
   getLastActiveAddress,
   getNetwork,
   getTxQueue,
@@ -28,6 +30,7 @@ import {
   initStore,
   removeConnectedSite,
   setAutoLockMinutes,
+  setHdStore,
   setLastActiveAddress,
   setNetwork,
   setSessionState,
@@ -149,6 +152,14 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
   switch (msg.type) {
     case 'CREATE_WALLET':
       return createWallet(requirePassword(msg.password));
+    case 'CREATE_HD_WALLET':
+      return createHdWallet(requireString(msg.mnemonic, 'mnemonic'), requirePassword(msg.password));
+    case 'RESTORE_HD_WALLET':
+      return restoreHdWallet(requireString(msg.mnemonic, 'mnemonic'), requirePassword(msg.password));
+    case 'GENERATE_MNEMONIC':
+      return { mnemonic: generateMnemonic(256) };
+    case 'REVEAL_MNEMONIC':
+      return revealMnemonic(requirePassword(msg.password));
     case 'IMPORT_KEYSTORE':
       return importKeystore(requireString(msg.keystoreJson, 'keystoreJson'), requirePassword(msg.password));
     case 'UNLOCK_WALLET':
@@ -279,6 +290,23 @@ async function importKeystore(
 }
 
 async function createAdditionalAccount(password: string): Promise<{ pqAddress: string }> {
+  // If an HD wallet exists, derive the next HD account from the seed.
+  const hdStore = await getHdStore();
+  if (hdStore) {
+    const seed = await decryptHdSeed(hdStore.seedKeystoreJson, password);
+    const accountIndex = hdStore.accountCount;
+    const account = deriveAccount(seed, 'ml-dsa-65', accountIndex, 0, 0);
+    seed.fill(0);
+
+    const keystore = await createKeystore(account.secretKey, account.publicKey, password, account.address, 'mldsa65');
+    await addStoredAccount({ pqAddress: account.address, keystoreJson: JSON.stringify(keystore) });
+    account.secretKey.fill(0);
+
+    await setHdStore({ ...hdStore, accountCount: accountIndex + 1 });
+    return { pqAddress: account.address };
+  }
+
+  // Fallback: generate a new random keypair (non-HD wallet).
   const { publicKey: pk, secretKey: sk } = generateMlDsa65KeyPair();
   const adapter = MlDsa65Adapter.fromKeyPair(pk, sk.slice());
   const pqAddress = new ShellSigner('MlDsa65', adapter).getAddress();
@@ -288,6 +316,59 @@ async function createAdditionalAccount(password: string): Promise<{ pqAddress: s
   sk.fill(0);
 
   return { pqAddress };
+}
+
+/**
+ * Create a new HD wallet from a BIP-39 mnemonic (generated or user-provided).
+ * Derives ML-DSA-65 account 0 at m/9000'/8888'/1'/0'/0'/0', stores the encrypted
+ * seed and mnemonic, and unlocks the wallet.
+ */
+async function createHdWallet(mnemonic: string, password: string): Promise<{ pqAddress: string }> {
+  if (!validateHdMnemonic(mnemonic)) throw new Error('Invalid BIP-39 mnemonic');
+
+  const seed = mnemonicToSeed(mnemonic);
+  const account = deriveAccount(seed, 'ml-dsa-65', 0, 0, 0);
+
+  const seedKeystore = await encryptHdSeed(seed, password, account.address);
+  const mnemonicKeystore = await encryptMnemonic(mnemonic, password);
+  seed.fill(0);
+
+  await setHdStore({
+    seedKeystoreJson: JSON.stringify(seedKeystore),
+    mnemonicKeystoreJson: JSON.stringify(mnemonicKeystore),
+    accountCount: 1,
+  });
+
+  const keystore = await createKeystore(account.secretKey, account.publicKey, password, account.address, 'mldsa65');
+  await addStoredAccount({ pqAddress: account.address, keystoreJson: JSON.stringify(keystore) });
+
+  const adapter = MlDsa65Adapter.fromKeyPair(account.publicKey, account.secretKey.slice());
+  const signer = new ShellSigner('MlDsa65', adapter);
+  account.secretKey.fill(0);
+
+  replaceCurrentSigner(signer);
+  await setSessionState({ unlockedPqAddress: account.address, unlockedAt: Date.now() });
+  await setLastActiveAddress(account.address);
+  await scheduleAutoLock();
+
+  return { pqAddress: account.address };
+}
+
+/** Restore an HD wallet from an existing BIP-39 mnemonic (same logic as create). */
+async function restoreHdWallet(mnemonic: string, password: string): Promise<{ pqAddress: string }> {
+  return createHdWallet(mnemonic, password);
+}
+
+/**
+ * Reveal the recovery mnemonic after password verification.
+ * The mnemonic is only available if the wallet was created as an HD wallet.
+ */
+async function revealMnemonic(password: string): Promise<{ mnemonic: string }> {
+  const hdStore = await getHdStore();
+  if (!hdStore) throw new Error('No HD wallet found. Recovery phrase is only available for HD wallets.');
+
+  const mnemonic = await decryptMnemonic(hdStore.mnemonicKeystoreJson, password);
+  return { mnemonic };
 }
 
 async function getActiveAccount(): Promise<StoredAccount | null> {

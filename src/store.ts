@@ -210,6 +210,7 @@ export async function clearAllData(): Promise<void> {
   await chrome.storage.local.clear();
   await chrome.storage.session.clear();
   await initStore();
+  // hdStore is cleared by chrome.storage.local.clear() above
 }
 
 export async function getLastActiveAddress(): Promise<string | null> {
@@ -219,4 +220,24 @@ export async function getLastActiveAddress(): Promise<string | null> {
 
 export async function setLastActiveAddress(address: string): Promise<void> {
   await chrome.storage.local.set({ lastActiveAddress: address });
+}
+
+// HD wallet store — persists seed + mnemonic keystores and HD account count.
+export interface HdStore {
+  seedKeystoreJson: string;
+  mnemonicKeystoreJson: string;
+  accountCount: number;
+}
+
+export async function getHdStore(): Promise<HdStore | null> {
+  const { hdStore } = await chrome.storage.local.get('hdStore');
+  return (hdStore as HdStore) ?? null;
+}
+
+export async function setHdStore(data: HdStore): Promise<void> {
+  await chrome.storage.local.set({ hdStore: data });
+}
+
+export async function clearHdStore(): Promise<void> {
+  await chrome.storage.local.remove('hdStore');
 }

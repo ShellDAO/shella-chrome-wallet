@@ -676,3 +676,116 @@ describe('multi-account', () => {
     assert.equal(unlocked.pqAddress, second.pqAddress, 'Must unlock the specified account');
   });
 });
+
+describe('HD wallet', () => {
+  const PASSWORD = 'hdwallet-test-password!';
+  // Standard BIP-39 test mnemonic ("abandon" x23 + "art").
+  const TEST_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
+
+  async function resetHd() {
+    await handleMessage({ type: 'RESET_WALLET' });
+  }
+
+  test('GENERATE_MNEMONIC returns a 24-word BIP-39 phrase', async () => {
+    const res = await handleMessage({ type: 'GENERATE_MNEMONIC' });
+    assert.ok(typeof res.mnemonic === 'string', 'mnemonic must be a string');
+    const words = res.mnemonic.trim().split(/\s+/);
+    assert.equal(words.length, 24, 'default mnemonic must be 24 words');
+    // Two calls must produce different mnemonics (probabilistic, but sound).
+    const res2 = await handleMessage({ type: 'GENERATE_MNEMONIC' });
+    assert.notEqual(res.mnemonic, res2.mnemonic, 'Successive mnemonics must differ');
+  });
+
+  test('CREATE_HD_WALLET derives a deterministic address from the canonical mnemonic', async () => {
+    await resetHd();
+    const res = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    assert.match(res.pqAddress, /^0x[0-9a-f]{64}$/, 'address must be 0x+64 hex');
+    // Re-create with same mnemonic — must yield same address.
+    await resetHd();
+    const res2 = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    assert.equal(res.pqAddress, res2.pqAddress, 'Same mnemonic must produce identical address');
+  });
+
+  test('CREATE_HD_WALLET rejects an invalid mnemonic', async () => {
+    await resetHd();
+    let threw = false;
+    try {
+      await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: 'this is not a valid mnemonic at all', password: PASSWORD });
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, 'Invalid mnemonic must throw');
+  });
+
+  test('RESTORE_HD_WALLET matches CREATE_HD_WALLET for the same mnemonic', async () => {
+    await resetHd();
+    const created = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    await resetHd();
+    const restored = await handleMessage({ type: 'RESTORE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    assert.equal(created.pqAddress, restored.pqAddress, 'Restore must produce the same address as create');
+  });
+
+  test('CREATE_HD_WALLET wallet is immediately unlocked', async () => {
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+    assert.equal(snapshot.locked, false, 'HD wallet must be unlocked right after creation');
+  });
+
+  test('ADD_ACCOUNT on HD wallet derives deterministic second account', async () => {
+    await resetHd();
+    const first = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    const second = await handleMessage({ type: 'ADD_ACCOUNT', password: PASSWORD });
+    assert.match(second.pqAddress, /^0x[0-9a-f]{64}$/, 'Second HD account must have a valid address');
+    assert.notEqual(second.pqAddress, first.pqAddress, 'Second HD account must differ from the first');
+
+    // Restore + add account again — must get the same second address.
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    const second2 = await handleMessage({ type: 'ADD_ACCOUNT', password: PASSWORD });
+    assert.equal(second.pqAddress, second2.pqAddress, 'ADD_ACCOUNT on HD wallet must be deterministic');
+  });
+
+  test('REVEAL_MNEMONIC returns the original phrase after correct password', async () => {
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    const res = await handleMessage({ type: 'REVEAL_MNEMONIC', password: PASSWORD });
+    assert.equal(res.mnemonic, TEST_MNEMONIC, 'Revealed mnemonic must match original');
+  });
+
+  test('REVEAL_MNEMONIC rejects wrong password', async () => {
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    let threw = false;
+    try {
+      await handleMessage({ type: 'REVEAL_MNEMONIC', password: 'wrongpassword' });
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, 'REVEAL_MNEMONIC with wrong password must throw');
+  });
+
+  test('REVEAL_MNEMONIC throws on non-HD wallet', async () => {
+    await resetHd();
+    await handleMessage({ type: 'CREATE_WALLET', password: PASSWORD });
+    let threw = false;
+    try {
+      await handleMessage({ type: 'REVEAL_MNEMONIC', password: PASSWORD });
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, 'REVEAL_MNEMONIC must throw when no HD wallet is present');
+  });
+
+  test('HD wallet survives lock/unlock cycle', async () => {
+    await resetHd();
+    const created = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    await handleMessage({ type: 'LOCK_WALLET' });
+    const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+    assert.equal(snapshot.locked, true, 'Wallet must be locked');
+    await handleMessage({ type: 'UNLOCK_WALLET', password: PASSWORD });
+    const snapshot2 = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+    assert.equal(snapshot2.locked, false, 'Wallet must be unlocked again');
+    assert.equal(snapshot2.activeAddress, created.pqAddress, 'Active address must be preserved after lock/unlock');
+  });
+});

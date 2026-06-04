@@ -21,6 +21,15 @@ type View =
   | 'create-password'
   | 'create-generating'
   | 'create-success'
+  | 'hd-show-phrase'
+  | 'hd-confirm-phrase'
+  | 'hd-create-password'
+  | 'hd-creating'
+  | 'hd-restore-phrase'
+  | 'hd-restore-password'
+  | 'hd-restoring'
+  | 'reveal-phrase'
+  | 'reveal-phrase-confirm'
   | 'import-file'
   | 'import-password'
   | 'locked'
@@ -58,6 +67,8 @@ interface AppState {
   switchTargetAddress: string;
   // Temp fields for flows
   pendingKeystoreJson: string;
+  pendingMnemonic: string;
+  revealedMnemonic: string;
   sendTo: string;
   sendValue: string;
   sendData: string;
@@ -83,6 +94,8 @@ const state: AppState = {
   toast: '',
   nodeInfo: null,
   pendingKeystoreJson: '',
+  pendingMnemonic: '',
+  revealedMnemonic: '',
   sendTo: '',
   sendValue: '',
   sendData: '0x',
@@ -165,6 +178,15 @@ function render(): void {
     'create-password': renderCreatePassword,
     'create-generating': renderGenerating,
     'create-success': renderCreateSuccess,
+    'hd-show-phrase': renderHdShowPhrase,
+    'hd-confirm-phrase': renderHdConfirmPhrase,
+    'hd-create-password': renderHdCreatePassword,
+    'hd-creating': renderHdCreating,
+    'hd-restore-phrase': renderHdRestorePhrase,
+    'hd-restore-password': renderHdRestorePassword,
+    'hd-restoring': renderHdRestoring,
+    'reveal-phrase': renderRevealPhraseConfirm,
+    'reveal-phrase-confirm': renderRevealPhrase,
     'import-file': renderImportFile,
     'import-password': renderImportPassword,
     locked: renderLocked,
@@ -210,8 +232,9 @@ function renderWelcome(): string {
       <div class="logo">🔐</div>
       <h1>Shella Wallet</h1>
       <p class="subtitle">Post-quantum wallet for Shell Chain</p>
-      <button id="btn-create" class="btn-primary">Create New Wallet</button>
-      <button id="btn-import" class="btn-secondary">Import Keystore</button>
+      <button id="btn-create-hd" class="btn-primary">Create New Wallet</button>
+      <button id="btn-restore-hd" class="btn-secondary">Import Recovery Phrase</button>
+      <button id="btn-import" class="btn-secondary" style="margin-top:4px">Import Keystore</button>
     </div>
   `;
 }
@@ -281,6 +304,147 @@ function renderCreateSuccess(): string {
       </div>
       <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
       <button id="btn-goto-wallet" class="btn-primary">Open Wallet</button>
+    </div>
+  `;
+}
+
+function renderHdShowPhrase(): string {
+  const words = state.pendingMnemonic.split(' ');
+  const grid = words.map((word, i) => `
+    <div class="phrase-word">
+      <span class="word-num">${i + 1}</span>
+      <span class="word-val">${escapeHtml(word)}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Recovery Phrase</h2>
+      <p class="hint">⚠️ Write down these 24 words in order. Anyone with these words can access your wallet.</p>
+      <div class="phrase-grid">${grid}</div>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-phrase-next" class="btn-primary" style="margin-top:16px">I've Written It Down</button>
+    </div>
+  `;
+}
+
+function renderHdConfirmPhrase(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Confirm Backup</h2>
+      <p class="hint">Confirm you have securely backed up your recovery phrase. You will not be able to view it again.</p>
+      <label class="checkbox-label">
+        <input type="checkbox" id="hd-confirm-check" />
+        I have securely backed up my 24-word recovery phrase.
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-confirm-next" class="btn-primary" style="margin-top:16px">Continue</button>
+    </div>
+  `;
+}
+
+function renderHdCreatePassword(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Set Password</h2>
+      <p class="hint">Protects your wallet on this device. Minimum 8 characters.</p>
+      <label>Password
+        <input type="password" id="hd-pwd1" placeholder="Enter password" autocomplete="new-password" />
+      </label>
+      <label>Confirm Password
+        <input type="password" id="hd-pwd2" placeholder="Confirm password" autocomplete="new-password" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-create-confirm" class="btn-primary">Create Wallet</button>
+    </div>
+  `;
+}
+
+function renderHdCreating(): string {
+  return `
+    <div class="center">
+      <div class="spinner"></div>
+      <h2>Creating HD Wallet</h2>
+      <p class="hint">Deriving ML-DSA-65 keys from recovery phrase…</p>
+    </div>
+  `;
+}
+
+function renderHdRestorePhrase(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Import Recovery Phrase</h2>
+      <p class="hint">Enter your 12 or 24-word BIP-39 recovery phrase, separated by spaces.</p>
+      <label>Recovery Phrase
+        <textarea id="hd-restore-phrase-input" rows="4" placeholder="word1 word2 word3 …" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-restore-phrase-next" class="btn-primary">Continue</button>
+    </div>
+  `;
+}
+
+function renderHdRestorePassword(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Set Password</h2>
+      <p class="hint">Protects your restored wallet on this device. Minimum 8 characters.</p>
+      <label>Password
+        <input type="password" id="hd-restore-pwd1" placeholder="Enter password" autocomplete="new-password" />
+      </label>
+      <label>Confirm Password
+        <input type="password" id="hd-restore-pwd2" placeholder="Confirm password" autocomplete="new-password" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-restore-confirm" class="btn-primary">Restore Wallet</button>
+    </div>
+  `;
+}
+
+function renderHdRestoring(): string {
+  return `
+    <div class="center">
+      <div class="spinner"></div>
+      <h2>Restoring Wallet</h2>
+      <p class="hint">Deriving keys from recovery phrase…</p>
+    </div>
+  `;
+}
+
+function renderRevealPhraseConfirm(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Reveal Recovery Phrase</h2>
+      <p class="hint">⚠️ Make sure nobody is watching your screen. Enter your password to reveal the recovery phrase.</p>
+      <label>Password
+        <input type="password" id="reveal-phrase-pwd" placeholder="Enter password" autocomplete="current-password" autofocus />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-reveal-phrase-confirm" class="btn-primary">Reveal Phrase</button>
+    </div>
+  `;
+}
+
+function renderRevealPhrase(): string {
+  const words = state.revealedMnemonic.split(' ');
+  const grid = words.map((word, i) => `
+    <div class="phrase-word">
+      <span class="word-num">${i + 1}</span>
+      <span class="word-val">${escapeHtml(word)}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Recovery Phrase</h2>
+      <p class="hint">⚠️ Keep this phrase secret. Anyone with these words controls your wallet.</p>
+      <div class="phrase-grid">${grid}</div>
+      <button id="btn-back-from-phrase" class="btn-secondary" style="margin-top:16px">Done</button>
     </div>
   `;
 }
@@ -680,6 +844,7 @@ function renderSettings(): string {
       </label>
       <button id="btn-save-auto-lock" class="btn-secondary">Save Auto-lock</button>
       <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
+      <button id="btn-reveal-phrase" class="btn-secondary">Reveal Recovery Phrase</button>
       <button id="btn-reset" class="btn-danger">Reset Wallet</button>
 
       <div class="section-title" style="margin-top:16px">Connected dApps</div>
@@ -813,6 +978,155 @@ function attachHandlers(): void {
     render();
   });
 
+  on('btn-create-hd', 'click', async () => {
+    state.error = '';
+    state.view = 'create-generating';
+    render();
+    try {
+      const res = await send<{ mnemonic: string }>('GENERATE_MNEMONIC');
+      state.pendingMnemonic = res.mnemonic;
+      state.view = 'hd-show-phrase';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'welcome';
+      render();
+    }
+  });
+
+  on('btn-restore-hd', 'click', () => {
+    state.error = '';
+    state.pendingMnemonic = '';
+    state.view = 'hd-restore-phrase';
+    render();
+  });
+
+  on('btn-hd-phrase-next', 'click', () => {
+    state.error = '';
+    state.view = 'hd-confirm-phrase';
+    render();
+  });
+
+  on('btn-hd-confirm-next', 'click', () => {
+    const checked = (document.getElementById('hd-confirm-check') as HTMLInputElement)?.checked;
+    if (!checked) {
+      state.error = 'Please confirm you have backed up your recovery phrase.';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'hd-create-password';
+    render();
+  });
+
+  on('btn-hd-create-confirm', 'click', async () => {
+    const pwd1 = (document.getElementById('hd-pwd1') as HTMLInputElement)?.value;
+    const pwd2 = (document.getElementById('hd-pwd2') as HTMLInputElement)?.value;
+    if (!pwd1 || pwd1.length < 8) {
+      state.error = 'Password must be at least 8 characters';
+      render();
+      return;
+    }
+    if (pwd1 !== pwd2) {
+      state.error = 'Passwords do not match';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'hd-creating';
+    render();
+    try {
+      const res = await send<{ pqAddress: string }>('CREATE_HD_WALLET', {
+        mnemonic: state.pendingMnemonic,
+        password: pwd1,
+      });
+      state.pendingMnemonic = '';
+      state.pqAddress = res.pqAddress;
+      state.view = 'create-success';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'hd-create-password';
+      render();
+    }
+  });
+
+  on('btn-hd-restore-phrase-next', 'click', () => {
+    const phrase = ((document.getElementById('hd-restore-phrase-input') as HTMLTextAreaElement)?.value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const wordCount = phrase.split(' ').length;
+    if (wordCount !== 12 && wordCount !== 24) {
+      state.error = 'Recovery phrase must be 12 or 24 words.';
+      render();
+      return;
+    }
+    state.error = '';
+    state.pendingMnemonic = phrase;
+    state.view = 'hd-restore-password';
+    render();
+  });
+
+  on('btn-hd-restore-confirm', 'click', async () => {
+    const pwd1 = (document.getElementById('hd-restore-pwd1') as HTMLInputElement)?.value;
+    const pwd2 = (document.getElementById('hd-restore-pwd2') as HTMLInputElement)?.value;
+    if (!pwd1 || pwd1.length < 8) {
+      state.error = 'Password must be at least 8 characters';
+      render();
+      return;
+    }
+    if (pwd1 !== pwd2) {
+      state.error = 'Passwords do not match';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'hd-restoring';
+    render();
+    try {
+      const res = await send<{ pqAddress: string }>('RESTORE_HD_WALLET', {
+        mnemonic: state.pendingMnemonic,
+        password: pwd1,
+      });
+      state.pendingMnemonic = '';
+      state.pqAddress = res.pqAddress;
+      await refreshWalletData();
+      state.view = 'wallet';
+      render();
+      showToast('Wallet restored successfully');
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'hd-restore-password';
+      render();
+    }
+  });
+
+  on('btn-reveal-phrase', 'click', () => {
+    state.error = '';
+    state.revealedMnemonic = '';
+    state.view = 'reveal-phrase';
+    render();
+  });
+
+  on('btn-reveal-phrase-confirm', 'click', async () => {
+    const pwd = (document.getElementById('reveal-phrase-pwd') as HTMLInputElement)?.value;
+    if (!pwd) return;
+    state.error = '';
+    try {
+      const res = await send<{ mnemonic: string }>('REVEAL_MNEMONIC', { password: pwd });
+      state.revealedMnemonic = res.mnemonic;
+      state.view = 'reveal-phrase-confirm';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
+  on('btn-back-from-phrase', 'click', () => {
+    state.revealedMnemonic = '';
+    state.view = 'settings';
+    render();
+  });
+
   on('btn-import', 'click', () => {
     state.error = '';
     state.view = 'import-file';
@@ -823,6 +1137,12 @@ function attachHandlers(): void {
     state.error = '';
     const backMap: Partial<Record<View, View>> = {
       'create-password': 'welcome',
+      'hd-show-phrase': 'welcome',
+      'hd-confirm-phrase': 'hd-show-phrase',
+      'hd-create-password': 'hd-confirm-phrase',
+      'hd-restore-phrase': 'welcome',
+      'hd-restore-password': 'hd-restore-phrase',
+      'reveal-phrase': 'settings',
       'import-file': 'welcome',
       'import-password': 'import-file',
       send: 'wallet',
