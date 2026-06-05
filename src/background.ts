@@ -323,8 +323,8 @@ async function createAdditionalAccount(password: string): Promise<{ pqAddress: s
 
 /**
  * Create a new HD wallet from a BIP-39 mnemonic (generated or user-provided).
- * Derives ML-DSA-65 account 0 at m/9000'/8888'/1'/0'/0'/0', stores the encrypted
- * seed and mnemonic, and unlocks the wallet.
+ * Derives ML-DSA-65 account 0 at path m/9000'/8888'/1'/0'/0'/0' (all hardened),
+ * stores the encrypted seed and mnemonic, and unlocks the wallet.
  */
 async function createHdWallet(mnemonic: string, password: string): Promise<{ pqAddress: string }> {
   if (!validateHdMnemonic(mnemonic)) throw new Error('Invalid BIP-39 mnemonic');
