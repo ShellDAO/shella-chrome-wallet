@@ -128,7 +128,9 @@ function send<T = unknown>(type: string, data: Record<string, unknown> = {}): Pr
 }
 
 function app(): HTMLElement {
-  return document.getElementById('app')!;
+  const el = document.getElementById('app');
+  if (!el) throw new Error('#app element not found — popup DOM failed to load');
+  return el;
 }
 
 function showToast(msg: string, isError = false): void {

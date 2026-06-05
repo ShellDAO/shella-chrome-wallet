@@ -735,7 +735,11 @@ async function handleDappRequest(message: DappRequestMessage): Promise<unknown> 
         throw new Error('wallet_switchEthereumChain requires a chain payload');
       }
       const chainIdHex = requireString((chainPayload as Record<string, unknown>).chainId, 'chainId');
-      const chainId = Number(BigInt(chainIdHex));
+      const chainIdBig = BigInt(chainIdHex);
+      if (chainIdBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`chainId ${chainIdHex} exceeds safe integer range`);
+      }
+      const chainId = Number(chainIdBig);
       const nextNetwork = findKnownNetwork(chainId);
       if (!nextNetwork) {
         throw new Error('Unknown chain. Use wallet_addEthereumChain first.');
@@ -859,8 +863,9 @@ function buildConnectedSite(
 }
 
 async function getConnectedPermission(origin: string): Promise<ConnectedSitePermission | null> {
+  const normalized = normalizeOrigin(origin);
   const sites = await getConnectedSites();
-  return sites.find((site) => site.origin === origin) ?? null;
+  return sites.find((site) => site.origin === normalized) ?? null;
 }
 
 // WALLET-L1: use cryptographically secure RNG for all request/approval IDs.
