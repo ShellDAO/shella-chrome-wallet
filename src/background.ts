@@ -293,8 +293,12 @@ async function createAdditionalAccount(password: string): Promise<{ pqAddress: s
   // If an HD wallet exists, derive the next HD account from the seed.
   const hdStore = await getHdStore();
   if (hdStore) {
-    const seed = await decryptHdSeed(hdStore.seedKeystoreJson, password);
     const accountIndex = hdStore.accountCount;
+    // Reserve the index atomically before async decrypt/derive to prevent
+    // concurrent ADD_ACCOUNT messages from deriving the same account index.
+    await setHdStore({ ...hdStore, accountCount: accountIndex + 1 });
+
+    const seed = await decryptHdSeed(hdStore.seedKeystoreJson, password);
     const account = deriveAccount(seed, 'ml-dsa-65', accountIndex, 0, 0);
     seed.fill(0);
 
@@ -302,7 +306,6 @@ async function createAdditionalAccount(password: string): Promise<{ pqAddress: s
     await addStoredAccount({ pqAddress: account.address, keystoreJson: JSON.stringify(keystore) });
     account.secretKey.fill(0);
 
-    await setHdStore({ ...hdStore, accountCount: accountIndex + 1 });
     return { pqAddress: account.address };
   }
 
