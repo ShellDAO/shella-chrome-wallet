@@ -9,6 +9,13 @@ export interface StoredAccount {
   keystoreJson: string;
 }
 
+export interface PendingKeyRotation {
+  txHash: string;
+  pqAddress: string;
+  keystoreJson: string;
+  createdAt: number;
+}
+
 export interface ConnectedSitePermission {
   origin: string;
   accounts: string[];
@@ -80,6 +87,7 @@ export interface WalletSnapshot {
   locked: boolean;
   wallet: WalletState;
   primaryAccount: StoredAccount | null;
+  activeAddress: string | null;
   balance: {
     raw: string;
     formatted: string;

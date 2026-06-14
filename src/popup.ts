@@ -3,6 +3,7 @@
  * Multi-view SPA rendered into #app.
  */
 
+import QRCode from 'qrcode';
 import type {
   AaBatchInnerCall,
   ApprovalRequest,
@@ -20,6 +21,15 @@ type View =
   | 'create-password'
   | 'create-generating'
   | 'create-success'
+  | 'hd-show-phrase'
+  | 'hd-confirm-phrase'
+  | 'hd-create-password'
+  | 'hd-creating'
+  | 'hd-restore-phrase'
+  | 'hd-restore-password'
+  | 'hd-restoring'
+  | 'reveal-phrase'
+  | 'reveal-phrase-confirm'
   | 'import-file'
   | 'import-password'
   | 'locked'
@@ -30,6 +40,11 @@ type View =
   | 'receive'
   | 'history'
   | 'settings'
+  | 'accounts'
+  | 'add-account'
+  | 'add-account-generating'
+  | 'switch-account'
+  | 'advanced-pq'
   | 'approval-request';
 
 interface AppState {
@@ -47,14 +62,30 @@ interface AppState {
   error: string;
   toast: string;
   nodeInfo: WalletNodeInfo | null;
+  // Multi-account state
+  accounts: Array<{ pqAddress: string }>;
+  selectedTxHash: string;
+  switchTargetAddress: string;
   // Temp fields for flows
   pendingKeystoreJson: string;
+  pendingMnemonic: string;
+  revealedMnemonic: string;
   sendTo: string;
   sendValue: string;
   sendData: string;
   sendGasLimit: string;
   sendMaxFeePerGas: string;
   sendMaxPriorityFeePerGas: string;
+  sessionPassword: string;
+  sessionIndex: string;
+  sessionRootAccountIndex: string;
+  sessionExpiryBlock: string;
+  sessionValueCap: string;
+  sessionTarget: string;
+  sessionTxSigningHash: string;
+  sessionAuthJson: string;
+  rotatePassword: string;
+  pendingRotationTxHash: string;
   approvalRequest: ApprovalRequest | null;
 }
 
@@ -74,13 +105,28 @@ const state: AppState = {
   toast: '',
   nodeInfo: null,
   pendingKeystoreJson: '',
+  pendingMnemonic: '',
+  revealedMnemonic: '',
   sendTo: '',
   sendValue: '',
   sendData: '0x',
   sendGasLimit: '',
   sendMaxFeePerGas: '',
   sendMaxPriorityFeePerGas: '',
+  sessionPassword: '',
+  sessionIndex: '0',
+  sessionRootAccountIndex: '0',
+  sessionExpiryBlock: '',
+  sessionValueCap: '0',
+  sessionTarget: '',
+  sessionTxSigningHash: '',
+  sessionAuthJson: '',
+  rotatePassword: '',
+  pendingRotationTxHash: '',
   approvalRequest: null,
+  accounts: [],
+  selectedTxHash: '',
+  switchTargetAddress: '',
 };
 
 function escapeHtml(value: unknown): string {
@@ -103,7 +149,9 @@ function send<T = unknown>(type: string, data: Record<string, unknown> = {}): Pr
 }
 
 function app(): HTMLElement {
-  return document.getElementById('app')!;
+  const el = document.getElementById('app');
+  if (!el) throw new Error('#app element not found — popup DOM failed to load');
+  return el;
 }
 
 function showToast(msg: string, isError = false): void {
@@ -153,6 +201,15 @@ function render(): void {
     'create-password': renderCreatePassword,
     'create-generating': renderGenerating,
     'create-success': renderCreateSuccess,
+    'hd-show-phrase': renderHdShowPhrase,
+    'hd-confirm-phrase': renderHdConfirmPhrase,
+    'hd-create-password': renderHdCreatePassword,
+    'hd-creating': renderHdCreating,
+    'hd-restore-phrase': renderHdRestorePhrase,
+    'hd-restore-password': renderHdRestorePassword,
+    'hd-restoring': renderHdRestoring,
+    'reveal-phrase': renderRevealPhraseConfirm,
+    'reveal-phrase-confirm': renderRevealPhrase,
     'import-file': renderImportFile,
     'import-password': renderImportPassword,
     locked: renderLocked,
@@ -163,6 +220,11 @@ function render(): void {
     receive: renderReceive,
     history: renderHistory,
     settings: renderSettings,
+    accounts: renderAccounts,
+    'add-account': renderAddAccount,
+    'add-account-generating': renderAddAccountGenerating,
+    'switch-account': renderSwitchAccount,
+    'advanced-pq': renderAdvancedPq,
     'approval-request': renderApprovalRequest,
   };
   
@@ -194,8 +256,9 @@ function renderWelcome(): string {
       <div class="logo">🔐</div>
       <h1>Shella Wallet</h1>
       <p class="subtitle">Post-quantum wallet for Shell Chain</p>
-      <button id="btn-create" class="btn-primary">Create New Wallet</button>
-      <button id="btn-import" class="btn-secondary">Import Keystore</button>
+      <button id="btn-create-hd" class="btn-primary">Create New Wallet</button>
+      <button id="btn-restore-hd" class="btn-secondary">Import Recovery Phrase</button>
+      <button id="btn-import" class="btn-secondary" style="margin-top:4px">Import Keystore</button>
     </div>
   `;
 }
@@ -269,6 +332,147 @@ function renderCreateSuccess(): string {
   `;
 }
 
+function renderHdShowPhrase(): string {
+  const words = state.pendingMnemonic.split(' ');
+  const grid = words.map((word, i) => `
+    <div class="phrase-word">
+      <span class="word-num">${i + 1}</span>
+      <span class="word-val">${escapeHtml(word)}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Recovery Phrase</h2>
+      <p class="hint">⚠️ Write down these 24 words in order. Anyone with these words can access your wallet.</p>
+      <div class="phrase-grid">${grid}</div>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-phrase-next" class="btn-primary" style="margin-top:16px">I've Written It Down</button>
+    </div>
+  `;
+}
+
+function renderHdConfirmPhrase(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Confirm Backup</h2>
+      <p class="hint">Confirm you have securely backed up your recovery phrase. You will not be able to view it again.</p>
+      <label class="checkbox-label">
+        <input type="checkbox" id="hd-confirm-check" />
+        I have securely backed up my 24-word recovery phrase.
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-confirm-next" class="btn-primary" style="margin-top:16px">Continue</button>
+    </div>
+  `;
+}
+
+function renderHdCreatePassword(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Set Password</h2>
+      <p class="hint">Protects your wallet on this device. Minimum 8 characters.</p>
+      <label>Password
+        <input type="password" id="hd-pwd1" placeholder="Enter password" autocomplete="new-password" />
+      </label>
+      <label>Confirm Password
+        <input type="password" id="hd-pwd2" placeholder="Confirm password" autocomplete="new-password" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-create-confirm" class="btn-primary">Create Wallet</button>
+    </div>
+  `;
+}
+
+function renderHdCreating(): string {
+  return `
+    <div class="center">
+      <div class="spinner"></div>
+      <h2>Creating HD Wallet</h2>
+      <p class="hint">Deriving ML-DSA-65 keys from recovery phrase…</p>
+    </div>
+  `;
+}
+
+function renderHdRestorePhrase(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Import Recovery Phrase</h2>
+      <p class="hint">Enter your 12 or 24-word BIP-39 recovery phrase, separated by spaces.</p>
+      <label>Recovery Phrase
+        <textarea id="hd-restore-phrase-input" rows="4" placeholder="word1 word2 word3 …" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-restore-phrase-next" class="btn-primary">Continue</button>
+    </div>
+  `;
+}
+
+function renderHdRestorePassword(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Set Password</h2>
+      <p class="hint">Protects your restored wallet on this device. Minimum 8 characters.</p>
+      <label>Password
+        <input type="password" id="hd-restore-pwd1" placeholder="Enter password" autocomplete="new-password" />
+      </label>
+      <label>Confirm Password
+        <input type="password" id="hd-restore-pwd2" placeholder="Confirm password" autocomplete="new-password" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-hd-restore-confirm" class="btn-primary">Restore Wallet</button>
+    </div>
+  `;
+}
+
+function renderHdRestoring(): string {
+  return `
+    <div class="center">
+      <div class="spinner"></div>
+      <h2>Restoring Wallet</h2>
+      <p class="hint">Deriving keys from recovery phrase…</p>
+    </div>
+  `;
+}
+
+function renderRevealPhraseConfirm(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Reveal Recovery Phrase</h2>
+      <p class="hint">⚠️ Make sure nobody is watching your screen. Enter your password to reveal the recovery phrase.</p>
+      <label>Password
+        <input type="password" id="reveal-phrase-pwd" placeholder="Enter password" autocomplete="current-password" autofocus />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-reveal-phrase-confirm" class="btn-primary">Reveal Phrase</button>
+    </div>
+  `;
+}
+
+function renderRevealPhrase(): string {
+  const words = state.revealedMnemonic.split(' ');
+  const grid = words.map((word, i) => `
+    <div class="phrase-word">
+      <span class="word-num">${i + 1}</span>
+      <span class="word-val">${escapeHtml(word)}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Recovery Phrase</h2>
+      <p class="hint">⚠️ Keep this phrase secret. Anyone with these words controls your wallet.</p>
+      <div class="phrase-grid">${grid}</div>
+      <button id="btn-back-from-phrase" class="btn-secondary" style="margin-top:16px">Done</button>
+    </div>
+  `;
+}
+
 function renderImportFile(): string {
   return `
     <div class="view-form">
@@ -302,10 +506,23 @@ function renderImportPassword(): string {
 }
 
 function renderLocked(): string {
+    const accountSelectorHtml = state.accounts.length > 1
+    ? `<label>Account
+        <select id="unlock-account-select">
+          ${state.accounts.map(a =>
+            `<option value="${escapeHtml(a.pqAddress)}" ${a.pqAddress === state.pqAddress ? 'selected' : ''}>
+               ${truncate(a.pqAddress)}
+             </option>`
+          ).join('')}
+        </select>
+      </label>`
+    : '';
+
   return `
     <div class="view-form">
       <div class="logo">🔒</div>
       <h2>Wallet Locked</h2>
+      ${accountSelectorHtml}
       <p class="hint">${truncate(state.pqAddress) || 'Enter your password to unlock.'}</p>
       <label>Password
         <input type="password" id="unlock-pwd" placeholder="Enter password" autocomplete="current-password" autofocus />
@@ -373,6 +590,7 @@ function renderWallet(): string {
           <option value="mainnet" ${state.network.name === KNOWN_NETWORKS.mainnet.name ? 'selected' : ''}>⬡ Mainnet</option>
         </select>
         ${storageProfileHtml}
+        <button class="btn-icon" id="btn-accounts" title="Accounts (${state.accounts.length})">👤</button>
         <button class="btn-icon" id="btn-settings" title="Settings">⚙</button>
         <button class="btn-icon" id="btn-lock" title="Lock wallet">🔒</button>
       </div>
@@ -453,8 +671,8 @@ function renderReceive(): string {
       <button class="btn-back" id="btn-back">← Back</button>
       <h2>Receive SHELL</h2>
       <p class="hint">Share your address to receive funds.</p>
-      <div class="qr-placeholder">
-        <div class="qr-icon">📲</div>
+      <div class="qr-wrapper" style="display:flex;justify-content:center;margin:12px 0">
+        <canvas id="qr-canvas"></canvas>
       </div>
       <div class="address-box">
         <span class="monospace address-full" id="full-addr">${state.pqAddress}</span>
@@ -474,16 +692,27 @@ function renderHistory(): string {
         const dir = readableType !== 'Transfer' ? readableType : (isOutgoing ? '↑ Sent' : '↓ Received');
         const val = isBatch ? '' : formatDisplayValue(tx.value) + ' SHELL';
         const hash = tx.txHash ? truncate(tx.txHash, 8, 6) : '–';
+        const isExpanded = state.selectedTxHash === tx.txHash;
         const sponsoredBadge = isSponsored
           ? `<span class="badge badge-sponsored" title="Gas sponsored by paymaster">⚡ Sponsored</span>`
           : '';
+        const detail = isExpanded ? `
+          <div class="tx-detail">
+            <div class="tx-detail-row"><span>Hash</span><span class="monospace">${escapeHtml(tx.txHash ?? '–')}</span></div>
+            <div class="tx-detail-row"><span>From</span><span class="monospace">${escapeHtml(truncate(tx.from, 10, 8))}</span></div>
+            <div class="tx-detail-row"><span>To</span><span class="monospace">${escapeHtml(truncate(tx.to ?? '–', 10, 8))}</span></div>
+            <div class="tx-detail-row"><span>Value</span><span>${escapeHtml(formatDisplayValue(tx.value))} SHELL</span></div>
+            <div class="tx-detail-row"><span>Status</span><span>${escapeHtml(tx.status)}</span></div>
+            ${tx.error ? `<div class="tx-detail-row tx-detail-error"><span>Error</span><span>${escapeHtml(tx.error)}</span></div>` : ''}
+          </div>` : '';
         return `
-          <div class="tx-item${isBatch ? ' tx-item-batch' : ''}">
+          <div class="tx-item${isBatch ? ' tx-item-batch' : ''} tx-item-clickable" data-txhash="${escapeHtml(tx.txHash ?? '')}">
             <span class="tx-dir">${dir}</span>
             <span class="tx-hash monospace">${hash}</span>
             ${val ? `<span class="tx-value">${val}</span>` : ''}
             ${sponsoredBadge}
             <span class="tx-status ${tx.status}">${tx.status}</span>
+            ${detail}
           </div>
         `;
       }).join('')
@@ -520,6 +749,76 @@ export function formatTxHistoryLabel(tx: WalletTxRecord): string {
   const type = formatTxHistoryType(tx);
   if (type !== 'Transfer') return type;
   return `${formatDisplayValue(tx.value)} SHELL`;
+}
+
+function renderAccounts(): string {
+  const accountsHtml = state.accounts.map((acct, i) => {
+    const isActive = acct.pqAddress === state.pqAddress;
+    return `
+      <div class="account-item${isActive ? ' account-item-active' : ''}">
+        <div class="account-item-info">
+          <span class="account-label">Account ${i + 1}</span>
+          <span class="monospace account-address">${truncate(acct.pqAddress)}</span>
+          ${isActive ? '<span class="badge badge-active">Active</span>' : ''}
+        </div>
+        <div class="account-item-actions">
+          ${!isActive
+            ? `<button class="btn-secondary btn-switch-account" data-address="${escapeHtml(acct.pqAddress)}">Switch</button>`
+            : ''}
+          <button class="btn-secondary btn-copy-account" data-address="${escapeHtml(acct.pqAddress)}">Copy</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Accounts</h2>
+      <div class="account-list">${accountsHtml}</div>
+      <button id="btn-add-account" class="btn-secondary" style="margin-top:16px">+ Add Account</button>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderAddAccount(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Add Account</h2>
+      <p class="hint">Set a password to protect this account's keystore. You will need it to switch to this account.</p>
+      <label>Password
+        <input type="password" id="add-account-pwd1" placeholder="Password (min 8 chars)" autocomplete="new-password" />
+      </label>
+      <label>Confirm Password
+        <input type="password" id="add-account-pwd2" placeholder="Confirm password" autocomplete="new-password" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-add-account-confirm" class="btn-primary">Generate Account</button>
+    </div>
+  `;
+}
+
+function renderAddAccountGenerating(): string {
+  return `<div class="center"><div class="spinner"></div><p>Generating new account…</p></div>`;
+}
+
+function renderSwitchAccount(): string {
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Switch Account</h2>
+      <p class="hint">Enter the password for this account:</p>
+      <div class="address-box" style="margin-bottom:12px">
+        <span class="monospace">${truncate(state.switchTargetAddress)}</span>
+      </div>
+      <label>Password
+        <input type="password" id="switch-account-pwd" placeholder="Account password" autocomplete="current-password" autofocus />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-switch-account-confirm" class="btn-primary">Switch</button>
+    </div>
+  `;
 }
 
 function renderSettings(): string {
@@ -569,10 +868,65 @@ function renderSettings(): string {
       </label>
       <button id="btn-save-auto-lock" class="btn-secondary">Save Auto-lock</button>
       <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
+      <button id="btn-reveal-phrase" class="btn-secondary">Reveal Recovery Phrase</button>
+      <button id="btn-advanced-pq" class="btn-secondary">Advanced PQ</button>
       <button id="btn-reset" class="btn-danger">Reset Wallet</button>
 
       <div class="section-title" style="margin-top:16px">Connected dApps</div>
       <div class="site-list">${connectedSitesHtml}</div>
+    </div>
+  `;
+}
+
+function renderAdvancedPq(): string {
+  const resultHtml = state.sessionAuthJson
+    ? `
+      <div class="section-title" style="margin-top:16px">Session Authorization</div>
+      <textarea id="session-auth-json" rows="10" readonly>${escapeHtml(state.sessionAuthJson)}</textarea>
+      <button id="btn-copy-session-auth" class="btn-secondary">Copy Session Auth</button>
+    `
+    : '';
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Advanced PQ</h2>
+      <p class="hint">Authorize a deterministic HD session key for bounded AA/paymaster workflows.</p>
+
+      <div class="section-title">Session Key</div>
+      <label>Password
+        <input type="password" id="session-password" placeholder="Wallet password" autocomplete="current-password" value="${escapeHtml(state.sessionPassword)}" />
+      </label>
+      <label>Root Account Index
+        <input type="number" id="session-root-index" min="0" step="1" value="${escapeHtml(state.sessionRootAccountIndex)}" />
+      </label>
+      <label>Session Index
+        <input type="number" id="session-index" min="0" step="1" value="${escapeHtml(state.sessionIndex)}" />
+      </label>
+      <label>Expiry Block
+        <input type="number" id="session-expiry" min="1" step="1" placeholder="e.g. 430000" value="${escapeHtml(state.sessionExpiryBlock)}" />
+      </label>
+      <label>Value Cap (wei)
+        <input type="text" id="session-value-cap" inputmode="numeric" placeholder="0" value="${escapeHtml(state.sessionValueCap)}" />
+      </label>
+      <label>Target Address (optional)
+        <input type="text" id="session-target" placeholder="0x… or empty" value="${escapeHtml(state.sessionTarget)}" />
+      </label>
+      <label>Transaction Signing Hash (optional)
+        <input type="text" id="session-tx-hash" placeholder="0x + 32 bytes, optional" value="${escapeHtml(state.sessionTxSigningHash)}" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-authorize-session" class="btn-primary">Authorize Session Key</button>
+      ${resultHtml}
+
+      <div class="section-title" style="margin-top:16px">Key Rotation</div>
+      <p class="hint">Submit an AccountManager key-rotation transaction. The wallet activates the new local keystore only after the transaction confirms.</p>
+      <label>Password
+        <input type="password" id="rotate-password" placeholder="Wallet password" autocomplete="current-password" value="${escapeHtml(state.rotatePassword)}" />
+      </label>
+      <button id="btn-rotate-key" class="btn-secondary">Rotate Active Key</button>
+      ${state.pendingRotationTxHash
+        ? `<div class="status-card status-card-warning">Pending rotation: <span class="monospace">${truncate(state.pendingRotationTxHash, 10, 8)}</span></div>`
+        : ''}
     </div>
   `;
 }
@@ -702,6 +1056,155 @@ function attachHandlers(): void {
     render();
   });
 
+  on('btn-create-hd', 'click', async () => {
+    state.error = '';
+    state.view = 'create-generating';
+    render();
+    try {
+      const res = await send<{ mnemonic: string }>('GENERATE_MNEMONIC');
+      state.pendingMnemonic = res.mnemonic;
+      state.view = 'hd-show-phrase';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'welcome';
+      render();
+    }
+  });
+
+  on('btn-restore-hd', 'click', () => {
+    state.error = '';
+    state.pendingMnemonic = '';
+    state.view = 'hd-restore-phrase';
+    render();
+  });
+
+  on('btn-hd-phrase-next', 'click', () => {
+    state.error = '';
+    state.view = 'hd-confirm-phrase';
+    render();
+  });
+
+  on('btn-hd-confirm-next', 'click', () => {
+    const checked = (document.getElementById('hd-confirm-check') as HTMLInputElement)?.checked;
+    if (!checked) {
+      state.error = 'Please confirm you have backed up your recovery phrase.';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'hd-create-password';
+    render();
+  });
+
+  on('btn-hd-create-confirm', 'click', async () => {
+    const pwd1 = (document.getElementById('hd-pwd1') as HTMLInputElement)?.value;
+    const pwd2 = (document.getElementById('hd-pwd2') as HTMLInputElement)?.value;
+    if (!pwd1 || pwd1.length < 8) {
+      state.error = 'Password must be at least 8 characters';
+      render();
+      return;
+    }
+    if (pwd1 !== pwd2) {
+      state.error = 'Passwords do not match';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'hd-creating';
+    render();
+    try {
+      const res = await send<{ pqAddress: string }>('CREATE_HD_WALLET', {
+        mnemonic: state.pendingMnemonic,
+        password: pwd1,
+      });
+      state.pendingMnemonic = '';
+      state.pqAddress = res.pqAddress;
+      state.view = 'create-success';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'hd-create-password';
+      render();
+    }
+  });
+
+  on('btn-hd-restore-phrase-next', 'click', () => {
+    const phrase = ((document.getElementById('hd-restore-phrase-input') as HTMLTextAreaElement)?.value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const wordCount = phrase.split(' ').length;
+    if (wordCount !== 12 && wordCount !== 24) {
+      state.error = 'Recovery phrase must be 12 or 24 words.';
+      render();
+      return;
+    }
+    state.error = '';
+    state.pendingMnemonic = phrase;
+    state.view = 'hd-restore-password';
+    render();
+  });
+
+  on('btn-hd-restore-confirm', 'click', async () => {
+    const pwd1 = (document.getElementById('hd-restore-pwd1') as HTMLInputElement)?.value;
+    const pwd2 = (document.getElementById('hd-restore-pwd2') as HTMLInputElement)?.value;
+    if (!pwd1 || pwd1.length < 8) {
+      state.error = 'Password must be at least 8 characters';
+      render();
+      return;
+    }
+    if (pwd1 !== pwd2) {
+      state.error = 'Passwords do not match';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'hd-restoring';
+    render();
+    try {
+      const res = await send<{ pqAddress: string }>('RESTORE_HD_WALLET', {
+        mnemonic: state.pendingMnemonic,
+        password: pwd1,
+      });
+      state.pendingMnemonic = '';
+      state.pqAddress = res.pqAddress;
+      await refreshWalletData();
+      state.view = 'wallet';
+      render();
+      showToast('Wallet restored successfully');
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'hd-restore-password';
+      render();
+    }
+  });
+
+  on('btn-reveal-phrase', 'click', () => {
+    state.error = '';
+    state.revealedMnemonic = '';
+    state.view = 'reveal-phrase';
+    render();
+  });
+
+  on('btn-reveal-phrase-confirm', 'click', async () => {
+    const pwd = (document.getElementById('reveal-phrase-pwd') as HTMLInputElement)?.value;
+    if (!pwd) return;
+    state.error = '';
+    try {
+      const res = await send<{ mnemonic: string }>('REVEAL_MNEMONIC', { password: pwd });
+      state.revealedMnemonic = res.mnemonic;
+      state.view = 'reveal-phrase-confirm';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
+  on('btn-back-from-phrase', 'click', () => {
+    state.revealedMnemonic = '';
+    state.view = 'settings';
+    render();
+  });
+
   on('btn-import', 'click', () => {
     state.error = '';
     state.view = 'import-file';
@@ -712,12 +1215,22 @@ function attachHandlers(): void {
     state.error = '';
     const backMap: Partial<Record<View, View>> = {
       'create-password': 'welcome',
+      'hd-show-phrase': 'welcome',
+      'hd-confirm-phrase': 'hd-show-phrase',
+      'hd-create-password': 'hd-confirm-phrase',
+      'hd-restore-phrase': 'welcome',
+      'hd-restore-password': 'hd-restore-phrase',
+      'reveal-phrase': 'settings',
       'import-file': 'welcome',
       'import-password': 'import-file',
       send: 'wallet',
       receive: 'wallet',
       history: 'wallet',
       settings: 'wallet',
+      accounts: 'wallet',
+      'add-account': 'accounts',
+      'switch-account': 'accounts',
+      'advanced-pq': 'settings',
     };
     state.view = backMap[state.view] ?? 'wallet';
     render();
@@ -813,11 +1326,12 @@ function attachHandlers(): void {
   on('btn-unlock', 'click', async () => {
     const pwd = (document.getElementById('unlock-pwd') as HTMLInputElement)?.value;
     if (!pwd) return;
+    const selectedAddress = (document.getElementById('unlock-account-select') as HTMLSelectElement | null)?.value;
     state.error = '';
     state.view = 'unlocking';
     render();
     try {
-      await send('UNLOCK_WALLET', { password: pwd });
+      await send('UNLOCK_WALLET', { password: pwd, ...(selectedAddress ? { address: selectedAddress } : {}) });
       await refreshWalletData();
       state.view = 'wallet';
       render();
@@ -843,6 +1357,105 @@ function attachHandlers(): void {
     state.view = 'settings';
     render();
   });
+
+  on('btn-advanced-pq', 'click', () => {
+    state.error = '';
+    state.view = 'advanced-pq';
+    render();
+  });
+
+  on('btn-accounts', 'click', () => {
+    state.error = '';
+    state.view = 'accounts';
+    render();
+  });
+
+  // Add account flow
+  on('btn-add-account', 'click', () => {
+    state.error = '';
+    state.view = 'add-account';
+    render();
+  });
+
+  on('btn-add-account-confirm', 'click', async () => {
+    const pwd1 = (document.getElementById('add-account-pwd1') as HTMLInputElement)?.value;
+    const pwd2 = (document.getElementById('add-account-pwd2') as HTMLInputElement)?.value;
+    if (!pwd1 || pwd1.length < 8) {
+      state.error = 'Password must be at least 8 characters';
+      render();
+      return;
+    }
+    if (pwd1 !== pwd2) {
+      state.error = 'Passwords do not match';
+      render();
+      return;
+    }
+    state.error = '';
+    state.view = 'add-account-generating';
+    render();
+    try {
+      await send<{ pqAddress: string }>('ADD_ACCOUNT', { password: pwd1 });
+      await refreshWalletData();
+      state.view = 'accounts';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      state.view = 'add-account';
+      render();
+    }
+  });
+
+  // Switch account: clicking Switch on an account row
+  document.querySelectorAll('.btn-switch-account').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.error = '';
+      state.switchTargetAddress = (btn as HTMLElement).dataset.address ?? '';
+      state.view = 'switch-account';
+      render();
+    });
+  });
+
+  // Copy address from accounts list
+  document.querySelectorAll('.btn-copy-account').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const addr = (btn as HTMLElement).dataset.address ?? '';
+      copyText(addr, 'Address copied');
+    });
+  });
+
+  on('btn-switch-account-confirm', 'click', async () => {
+    const pwd = (document.getElementById('switch-account-pwd') as HTMLInputElement)?.value;
+    if (!pwd) return;
+    state.error = '';
+    try {
+      await send('SWITCH_ACCOUNT', { password: pwd, address: state.switchTargetAddress });
+      await refreshWalletData();
+      state.view = 'wallet';
+      render();
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
+  // History tx click-to-expand detail
+  document.querySelectorAll('.tx-item-clickable').forEach((item) => {
+    item.addEventListener('click', () => {
+      const hash = (item as HTMLElement).dataset.txhash ?? '';
+      state.selectedTxHash = state.selectedTxHash === hash ? '' : hash;
+      render();
+    });
+  });
+
+  // QR code for receive view
+  if (state.view === 'receive') {
+    const canvas = document.getElementById('qr-canvas') as HTMLCanvasElement | null;
+    if (canvas && state.pqAddress) {
+      QRCode.toCanvas(canvas, state.pqAddress, { width: 180, margin: 2 }).catch(() => {
+        // QR generation failed silently — address still shown as text
+      });
+    }
+  }
 
   // Quick network switcher in wallet header
   const quickNetSelect = document.getElementById('quick-net-select') as HTMLSelectElement | null;
@@ -1053,6 +1666,101 @@ function attachHandlers(): void {
     showToast('Auto-lock updated');
   });
 
+  on('btn-authorize-session', 'click', async () => {
+    const password = (document.getElementById('session-password') as HTMLInputElement)?.value ?? '';
+    const sessionIndex = (document.getElementById('session-index') as HTMLInputElement)?.value?.trim() ?? '0';
+    const rootAccountIndex = (document.getElementById('session-root-index') as HTMLInputElement)?.value?.trim() ?? '0';
+    const expiryBlock = (document.getElementById('session-expiry') as HTMLInputElement)?.value?.trim() ?? '';
+    const valueCap = (document.getElementById('session-value-cap') as HTMLInputElement)?.value?.trim() ?? '0';
+    const target = (document.getElementById('session-target') as HTMLInputElement)?.value?.trim() ?? '';
+    const txSigningHash = (document.getElementById('session-tx-hash') as HTMLInputElement)?.value?.trim() ?? '';
+
+    state.sessionPassword = password;
+    state.sessionIndex = sessionIndex;
+    state.sessionRootAccountIndex = rootAccountIndex;
+    state.sessionExpiryBlock = expiryBlock;
+    state.sessionValueCap = valueCap;
+    state.sessionTarget = target;
+    state.sessionTxSigningHash = txSigningHash;
+
+    if (!password) {
+      state.error = 'Enter wallet password';
+      render();
+      return;
+    }
+    if (!isNonNegativeIntegerString(sessionIndex) || !isNonNegativeIntegerString(rootAccountIndex)) {
+      state.error = 'Account and session indices must be non-negative integers';
+      render();
+      return;
+    }
+    if (!isPositiveIntegerString(expiryBlock)) {
+      state.error = 'Expiry block must be a positive integer';
+      render();
+      return;
+    }
+    if (!isQuantityString(valueCap)) {
+      state.error = 'Value cap must be a hex or decimal quantity';
+      render();
+      return;
+    }
+    if (target && !/^0x[0-9a-fA-F]{64}$/.test(target)) {
+      state.error = 'Target must be a 0x + 64-char Shell address';
+      render();
+      return;
+    }
+    if (txSigningHash && !/^0x[0-9a-fA-F]{64}$/.test(txSigningHash)) {
+      state.error = 'Transaction signing hash must be 0x + 32 bytes';
+      render();
+      return;
+    }
+
+    state.error = '';
+    try {
+      const result = await send('AUTHORIZE_SESSION_KEY', {
+        password,
+        sessionIndex: Number(sessionIndex),
+        rootAccountIndex: Number(rootAccountIndex),
+        expiryBlock: Number(expiryBlock),
+        valueCap,
+        target: target || null,
+        txSigningHash: txSigningHash || undefined,
+      });
+      state.sessionPassword = '';
+      state.sessionAuthJson = JSON.stringify(result, null, 2);
+      render();
+      showToast('Session key authorized');
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
+  on('btn-copy-session-auth', 'click', () => {
+    copyText(state.sessionAuthJson, 'Session auth copied');
+  });
+
+  on('btn-rotate-key', 'click', async () => {
+    const password = (document.getElementById('rotate-password') as HTMLInputElement)?.value ?? '';
+    state.rotatePassword = password;
+    if (!password) {
+      state.error = 'Enter wallet password';
+      render();
+      return;
+    }
+    state.error = '';
+    try {
+      const result = await send<{ txHash: string; pqAddress: string }>('ROTATE_KEY', { password });
+      state.rotatePassword = '';
+      state.pendingRotationTxHash = result.txHash;
+      await refreshWalletData();
+      render();
+      showToast('Key rotation submitted');
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
   on('btn-approval-approve', 'click', async () => {
     if (!state.approvalRequest) return;
     await send('RESOLVE_APPROVAL', { requestId: state.approvalRequest.id, approved: true });
@@ -1099,7 +1807,10 @@ async function refreshWalletData(): Promise<void> {
   state.detectedChainId = snapshot.detectedChainId;
   state.nonce = snapshot.nonce;
   state.nodeInfo = snapshot.nodeInfo ?? null;
-  if (snapshot.primaryAccount) {
+  state.accounts = snapshot.wallet.accounts ?? [];
+  if (snapshot.activeAddress) {
+    state.pqAddress = snapshot.activeAddress;
+  } else if (snapshot.primaryAccount) {
     state.pqAddress = snapshot.primaryAccount.pqAddress;
   }
   if (snapshot.balance) {
@@ -1140,6 +1851,18 @@ export function parseOptionalNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function isNonNegativeIntegerString(value: string): boolean {
+  return /^(0|[1-9][0-9]*)$/.test(value);
+}
+
+function isPositiveIntegerString(value: string): boolean {
+  return /^[1-9][0-9]*$/.test(value);
+}
+
+function isQuantityString(value: string): boolean {
+  return /^(0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value);
+}
+
 export function formatDisplayValue(value: string): string {
   const normalized = value.startsWith('0x') ? BigInt(value) : BigInt(value);
   return (Number(normalized) / 1e18).toFixed(6);
@@ -1164,14 +1887,15 @@ async function boot(): Promise<void> {
   state.detectedChainId = snapshot.detectedChainId;
   state.nonce = snapshot.nonce;
   state.nodeInfo = snapshot.nodeInfo ?? null;
+  state.accounts = snapshot.wallet.accounts ?? [];
 
   if (!snapshot.primaryAccount) {
     state.view = 'welcome';
   } else if (snapshot.locked) {
-    state.pqAddress = snapshot.primaryAccount.pqAddress;
+    state.pqAddress = snapshot.activeAddress ?? snapshot.primaryAccount.pqAddress;
     state.view = 'locked';
   } else {
-    state.pqAddress = snapshot.primaryAccount.pqAddress;
+    state.pqAddress = snapshot.activeAddress ?? snapshot.primaryAccount.pqAddress;
     if (snapshot.balance) {
       state.balance = snapshot.balance.raw;
       state.balanceFormatted = snapshot.balance.formatted;
