@@ -6,6 +6,7 @@
 import type {
   ConnectedSitePermission,
   Network,
+  PendingKeyRotation,
   SessionState,
   StoredAccount,
   WalletState,
@@ -134,6 +135,14 @@ export async function addAccount(account: StoredAccount): Promise<void> {
   }
 }
 
+export async function replaceAccountKeystore(pqAddress: string, keystoreJson: string): Promise<void> {
+  const accounts = await getAccounts();
+  const index = accounts.findIndex((a) => a.pqAddress.toLowerCase() === pqAddress.toLowerCase());
+  if (index === -1) throw new Error('Account not found');
+  accounts[index] = { ...accounts[index], keystoreJson };
+  await chrome.storage.local.set({ accounts });
+}
+
 export async function getNetwork(): Promise<Network> {
   const { network } = await chrome.storage.local.get('network');
   return network ?? DEFAULT_NETWORK;
@@ -162,6 +171,22 @@ export async function upsertTxRecord(record: WalletTxRecord): Promise<void> {
     next[index] = record;
   }
   await setTxQueue(next.slice(0, 50));
+}
+
+export async function getPendingKeyRotations(): Promise<PendingKeyRotation[]> {
+  const { pendingKeyRotations } = await chrome.storage.local.get('pendingKeyRotations');
+  return Array.isArray(pendingKeyRotations) ? pendingKeyRotations : [];
+}
+
+export async function addPendingKeyRotation(rotation: PendingKeyRotation): Promise<void> {
+  const pending = await getPendingKeyRotations();
+  const next = pending.filter((item) => item.txHash.toLowerCase() !== rotation.txHash.toLowerCase());
+  next.unshift(rotation);
+  await chrome.storage.local.set({ pendingKeyRotations: next.slice(0, 10) });
+}
+
+export async function setPendingKeyRotations(pendingKeyRotations: PendingKeyRotation[]): Promise<void> {
+  await chrome.storage.local.set({ pendingKeyRotations });
 }
 
 export async function getAutoLockMinutes(): Promise<number> {

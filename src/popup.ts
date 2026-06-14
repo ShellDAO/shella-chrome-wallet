@@ -44,6 +44,7 @@ type View =
   | 'add-account'
   | 'add-account-generating'
   | 'switch-account'
+  | 'advanced-pq'
   | 'approval-request';
 
 interface AppState {
@@ -75,6 +76,16 @@ interface AppState {
   sendGasLimit: string;
   sendMaxFeePerGas: string;
   sendMaxPriorityFeePerGas: string;
+  sessionPassword: string;
+  sessionIndex: string;
+  sessionRootAccountIndex: string;
+  sessionExpiryBlock: string;
+  sessionValueCap: string;
+  sessionTarget: string;
+  sessionTxSigningHash: string;
+  sessionAuthJson: string;
+  rotatePassword: string;
+  pendingRotationTxHash: string;
   approvalRequest: ApprovalRequest | null;
 }
 
@@ -102,6 +113,16 @@ const state: AppState = {
   sendGasLimit: '',
   sendMaxFeePerGas: '',
   sendMaxPriorityFeePerGas: '',
+  sessionPassword: '',
+  sessionIndex: '0',
+  sessionRootAccountIndex: '0',
+  sessionExpiryBlock: '',
+  sessionValueCap: '0',
+  sessionTarget: '',
+  sessionTxSigningHash: '',
+  sessionAuthJson: '',
+  rotatePassword: '',
+  pendingRotationTxHash: '',
   approvalRequest: null,
   accounts: [],
   selectedTxHash: '',
@@ -203,6 +224,7 @@ function render(): void {
     'add-account': renderAddAccount,
     'add-account-generating': renderAddAccountGenerating,
     'switch-account': renderSwitchAccount,
+    'advanced-pq': renderAdvancedPq,
     'approval-request': renderApprovalRequest,
   };
   
@@ -847,10 +869,64 @@ function renderSettings(): string {
       <button id="btn-save-auto-lock" class="btn-secondary">Save Auto-lock</button>
       <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
       <button id="btn-reveal-phrase" class="btn-secondary">Reveal Recovery Phrase</button>
+      <button id="btn-advanced-pq" class="btn-secondary">Advanced PQ</button>
       <button id="btn-reset" class="btn-danger">Reset Wallet</button>
 
       <div class="section-title" style="margin-top:16px">Connected dApps</div>
       <div class="site-list">${connectedSitesHtml}</div>
+    </div>
+  `;
+}
+
+function renderAdvancedPq(): string {
+  const resultHtml = state.sessionAuthJson
+    ? `
+      <div class="section-title" style="margin-top:16px">Session Authorization</div>
+      <textarea id="session-auth-json" rows="10" readonly>${escapeHtml(state.sessionAuthJson)}</textarea>
+      <button id="btn-copy-session-auth" class="btn-secondary">Copy Session Auth</button>
+    `
+    : '';
+  return `
+    <div class="view-form">
+      <button class="btn-back" id="btn-back">← Back</button>
+      <h2>Advanced PQ</h2>
+      <p class="hint">Authorize a deterministic HD session key for bounded AA/paymaster workflows.</p>
+
+      <div class="section-title">Session Key</div>
+      <label>Password
+        <input type="password" id="session-password" placeholder="Wallet password" autocomplete="current-password" value="${escapeHtml(state.sessionPassword)}" />
+      </label>
+      <label>Root Account Index
+        <input type="number" id="session-root-index" min="0" step="1" value="${escapeHtml(state.sessionRootAccountIndex)}" />
+      </label>
+      <label>Session Index
+        <input type="number" id="session-index" min="0" step="1" value="${escapeHtml(state.sessionIndex)}" />
+      </label>
+      <label>Expiry Block
+        <input type="number" id="session-expiry" min="1" step="1" placeholder="e.g. 430000" value="${escapeHtml(state.sessionExpiryBlock)}" />
+      </label>
+      <label>Value Cap (wei)
+        <input type="text" id="session-value-cap" inputmode="numeric" placeholder="0" value="${escapeHtml(state.sessionValueCap)}" />
+      </label>
+      <label>Target Address (optional)
+        <input type="text" id="session-target" placeholder="0x… or empty" value="${escapeHtml(state.sessionTarget)}" />
+      </label>
+      <label>Transaction Signing Hash (optional)
+        <input type="text" id="session-tx-hash" placeholder="0x + 32 bytes, optional" value="${escapeHtml(state.sessionTxSigningHash)}" />
+      </label>
+      ${state.error ? `<div class="error">${state.error}</div>` : ''}
+      <button id="btn-authorize-session" class="btn-primary">Authorize Session Key</button>
+      ${resultHtml}
+
+      <div class="section-title" style="margin-top:16px">Key Rotation</div>
+      <p class="hint">Submit an AccountManager key-rotation transaction. The wallet activates the new local keystore only after the transaction confirms.</p>
+      <label>Password
+        <input type="password" id="rotate-password" placeholder="Wallet password" autocomplete="current-password" value="${escapeHtml(state.rotatePassword)}" />
+      </label>
+      <button id="btn-rotate-key" class="btn-secondary">Rotate Active Key</button>
+      ${state.pendingRotationTxHash
+        ? `<div class="status-card status-card-warning">Pending rotation: <span class="monospace">${truncate(state.pendingRotationTxHash, 10, 8)}</span></div>`
+        : ''}
     </div>
   `;
 }
@@ -1154,6 +1230,7 @@ function attachHandlers(): void {
       accounts: 'wallet',
       'add-account': 'accounts',
       'switch-account': 'accounts',
+      'advanced-pq': 'settings',
     };
     state.view = backMap[state.view] ?? 'wallet';
     render();
@@ -1278,6 +1355,12 @@ function attachHandlers(): void {
 
   on('btn-settings', 'click', () => {
     state.view = 'settings';
+    render();
+  });
+
+  on('btn-advanced-pq', 'click', () => {
+    state.error = '';
+    state.view = 'advanced-pq';
     render();
   });
 
@@ -1583,6 +1666,101 @@ function attachHandlers(): void {
     showToast('Auto-lock updated');
   });
 
+  on('btn-authorize-session', 'click', async () => {
+    const password = (document.getElementById('session-password') as HTMLInputElement)?.value ?? '';
+    const sessionIndex = (document.getElementById('session-index') as HTMLInputElement)?.value?.trim() ?? '0';
+    const rootAccountIndex = (document.getElementById('session-root-index') as HTMLInputElement)?.value?.trim() ?? '0';
+    const expiryBlock = (document.getElementById('session-expiry') as HTMLInputElement)?.value?.trim() ?? '';
+    const valueCap = (document.getElementById('session-value-cap') as HTMLInputElement)?.value?.trim() ?? '0';
+    const target = (document.getElementById('session-target') as HTMLInputElement)?.value?.trim() ?? '';
+    const txSigningHash = (document.getElementById('session-tx-hash') as HTMLInputElement)?.value?.trim() ?? '';
+
+    state.sessionPassword = password;
+    state.sessionIndex = sessionIndex;
+    state.sessionRootAccountIndex = rootAccountIndex;
+    state.sessionExpiryBlock = expiryBlock;
+    state.sessionValueCap = valueCap;
+    state.sessionTarget = target;
+    state.sessionTxSigningHash = txSigningHash;
+
+    if (!password) {
+      state.error = 'Enter wallet password';
+      render();
+      return;
+    }
+    if (!isNonNegativeIntegerString(sessionIndex) || !isNonNegativeIntegerString(rootAccountIndex)) {
+      state.error = 'Account and session indices must be non-negative integers';
+      render();
+      return;
+    }
+    if (!isPositiveIntegerString(expiryBlock)) {
+      state.error = 'Expiry block must be a positive integer';
+      render();
+      return;
+    }
+    if (!isQuantityString(valueCap)) {
+      state.error = 'Value cap must be a hex or decimal quantity';
+      render();
+      return;
+    }
+    if (target && !/^0x[0-9a-fA-F]{64}$/.test(target)) {
+      state.error = 'Target must be a 0x + 64-char Shell address';
+      render();
+      return;
+    }
+    if (txSigningHash && !/^0x[0-9a-fA-F]{64}$/.test(txSigningHash)) {
+      state.error = 'Transaction signing hash must be 0x + 32 bytes';
+      render();
+      return;
+    }
+
+    state.error = '';
+    try {
+      const result = await send('AUTHORIZE_SESSION_KEY', {
+        password,
+        sessionIndex: Number(sessionIndex),
+        rootAccountIndex: Number(rootAccountIndex),
+        expiryBlock: Number(expiryBlock),
+        valueCap,
+        target: target || null,
+        txSigningHash: txSigningHash || undefined,
+      });
+      state.sessionPassword = '';
+      state.sessionAuthJson = JSON.stringify(result, null, 2);
+      render();
+      showToast('Session key authorized');
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
+  on('btn-copy-session-auth', 'click', () => {
+    copyText(state.sessionAuthJson, 'Session auth copied');
+  });
+
+  on('btn-rotate-key', 'click', async () => {
+    const password = (document.getElementById('rotate-password') as HTMLInputElement)?.value ?? '';
+    state.rotatePassword = password;
+    if (!password) {
+      state.error = 'Enter wallet password';
+      render();
+      return;
+    }
+    state.error = '';
+    try {
+      const result = await send<{ txHash: string; pqAddress: string }>('ROTATE_KEY', { password });
+      state.rotatePassword = '';
+      state.pendingRotationTxHash = result.txHash;
+      await refreshWalletData();
+      render();
+      showToast('Key rotation submitted');
+    } catch (err) {
+      state.error = (err as Error).message;
+      render();
+    }
+  });
+
   on('btn-approval-approve', 'click', async () => {
     if (!state.approvalRequest) return;
     await send('RESOLVE_APPROVAL', { requestId: state.approvalRequest.id, approved: true });
@@ -1671,6 +1849,18 @@ export function parseOptionalNumber(value: string): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isNonNegativeIntegerString(value: string): boolean {
+  return /^(0|[1-9][0-9]*)$/.test(value);
+}
+
+function isPositiveIntegerString(value: string): boolean {
+  return /^[1-9][0-9]*$/.test(value);
+}
+
+function isQuantityString(value: string): boolean {
+  return /^(0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value);
 }
 
 export function formatDisplayValue(value: string): string {

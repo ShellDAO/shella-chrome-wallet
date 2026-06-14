@@ -746,6 +746,63 @@ describe('HD wallet', () => {
     assert.equal(second.pqAddress, second2.pqAddress, 'ADD_ACCOUNT on HD wallet must be deterministic');
   });
 
+  test('ADD_ACCOUNT reserves HD indices across concurrent requests', async () => {
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+
+    const [second, third] = await Promise.all([
+      handleMessage({ type: 'ADD_ACCOUNT', password: PASSWORD }),
+      handleMessage({ type: 'ADD_ACCOUNT', password: PASSWORD }),
+    ]);
+
+    assert.notEqual(second.pqAddress, third.pqAddress, 'Concurrent HD account derivation must not reuse an index');
+    const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+    assert.equal(snapshot.wallet.accounts.length, 3, 'Two concurrent account additions must persist two distinct accounts');
+  });
+
+  test('AUTHORIZE_SESSION_KEY derives and signs a deterministic HD session key', async () => {
+    await resetHd();
+    const root = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    const txSigningHash = `0x${'11'.repeat(32)}`;
+
+    const auth = await handleMessage({
+      type: 'AUTHORIZE_SESSION_KEY',
+      password: PASSWORD,
+      sessionIndex: 7,
+      rootAccountIndex: 0,
+      expiryBlock: 1234,
+      valueCap: '0xde0b6b3a7640000',
+      target: null,
+      txSigningHash,
+    });
+
+    assert.equal(auth.rootAddress, root.pqAddress, 'Root address must match account 0');
+    assert.equal(auth.sessionPath, "m/1'/1'/7'", 'Session path must match PQ-HD session subtree');
+    assert.match(auth.sessionAddress, /^0x[0-9a-f]{64}$/, 'Session key must have a Shell address');
+    assert.notEqual(auth.sessionAddress, root.pqAddress, 'Session address must not equal root account');
+    assert.equal(auth.sessionAuth.session_algo, 1, 'Wallet session keys use ML-DSA-65');
+    assert.equal(auth.sessionAuth.expiry_block, 1234, 'Expiry block must be preserved');
+    assert.equal(auth.sessionAuth.value_cap, '0xde0b6b3a7640000', 'Value cap must be canonical hex');
+    assert.equal(auth.sessionAuth.target, null, 'Null target means unrestricted target');
+    assert.equal(auth.sessionAuth.session_pubkey.length, 1952, 'Session public key length');
+    assert.ok(auth.sessionAuth.root_signature.length > 0, 'Root signature must be present');
+    assert.ok(auth.sessionAuth.session_signature.length > 0, 'Session signature must be present when txSigningHash is provided');
+
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+    const auth2 = await handleMessage({
+      type: 'AUTHORIZE_SESSION_KEY',
+      password: PASSWORD,
+      sessionIndex: 7,
+      rootAccountIndex: 0,
+      expiryBlock: 1234,
+      valueCap: '0xde0b6b3a7640000',
+      target: null,
+    });
+    assert.equal(auth.sessionAddress, auth2.sessionAddress, 'Same mnemonic and session index must derive same session address');
+    assert.equal(auth2.sessionAuth.session_signature.length, 0, 'Unsigned session auth must leave session_signature empty');
+  });
+
   test('REVEAL_MNEMONIC returns the original phrase after correct password', async () => {
     await resetHd();
     await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
