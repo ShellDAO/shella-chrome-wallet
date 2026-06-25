@@ -39,6 +39,12 @@ try {
       ...sharedConfig,
       entryPoints: [join(root, 'src/background.ts')],
       outfile: join(dist, 'background.js'),
+      external: ['./walletconnect-bridge.js'],
+    }),
+    esbuild.build({
+      ...sharedConfig,
+      entryPoints: [join(root, 'src/walletconnect-bridge.ts')],
+      outfile: join(dist, 'walletconnect-bridge.js'),
     }),
     esbuild.build({
       ...sharedConfig,

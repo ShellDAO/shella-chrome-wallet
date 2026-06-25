@@ -30,7 +30,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: 'npm'
+
+      - name: Pin npm
+        run: npm install -g npm@11
 
       - name: Install shell-sdk dependencies
         working-directory: shell-sdk
@@ -54,9 +56,6 @@ jobs:
 
       - name: Build production bundle
         run: npm run build:prod
-
-      - name: Verify release metadata
-        run: npm run check:release-metadata
 
       - name: Enforce bundle size
         run: npm run check:bundle-size

@@ -1,0 +1,88 @@
+import type { ChainCapabilities, ChainKind } from '../types.js';
+
+export const CHAIN_CAPABILITIES: Record<ChainKind, ChainCapabilities> = {
+  shell: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: true,
+    dappProvider: true,
+    smartContracts: true,
+    accountNonce: true,
+    utxo: false,
+  },
+  evm: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: true,
+    dappProvider: true,
+    smartContracts: true,
+    accountNonce: true,
+    utxo: false,
+  },
+  tron: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: true,
+    dappProvider: true,
+    smartContracts: false,
+    accountNonce: false,
+    utxo: false,
+  },
+  solana: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: true,
+    dappProvider: true,
+    smartContracts: false,
+    accountNonce: false,
+    utxo: false,
+  },
+  bitcoin: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: false,
+    dappProvider: false,
+    smartContracts: false,
+    accountNonce: false,
+    utxo: true,
+  },
+  cosmos: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: false,
+    dappProvider: true,
+    smartContracts: false,
+    accountNonce: false,
+    utxo: false,
+  },
+  ton: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: true,
+    dappProvider: false,
+    smartContracts: false,
+    accountNonce: false,
+    utxo: false,
+  },
+  aptos: {
+    readBalance: true,
+    signTransactions: true,
+    nativeTransfers: true,
+    tokenTransfers: false,
+    dappProvider: true,
+    smartContracts: false,
+    accountNonce: true,
+    utxo: false,
+  },
+};
+
+export function getChainCapabilities(chainKind: ChainKind): ChainCapabilities {
+  return CHAIN_CAPABILITIES[chainKind];
+}

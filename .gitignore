@@ -1,5 +1,6 @@
 node_modules/
 dist/
+output/
 *.tsbuildinfo
 # --- AI / Agent local state ---
 # Local AI/agent caches, configs, and scratch — do NOT commit.

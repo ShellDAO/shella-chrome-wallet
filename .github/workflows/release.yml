@@ -27,7 +27,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+
+      - name: Pin npm
+        run: npm install -g npm@11
 
       - name: Install shell-sdk dependencies
         working-directory: shell-sdk
