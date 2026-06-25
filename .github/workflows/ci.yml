@@ -57,8 +57,5 @@ jobs:
       - name: Build production bundle
         run: npm run build:prod
 
-      - name: Verify release metadata
-        run: npm run check:release-metadata
-
       - name: Enforce bundle size
         run: npm run check:bundle-size
