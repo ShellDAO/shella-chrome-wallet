@@ -4,12 +4,34 @@
   "description": "Post-quantum Chrome wallet extension for Shell Chain",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20",
+    "npm": ">=11"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11",
+      "onFail": "error"
+    }
+  },
   "scripts": {
+    "preinstall": "node scripts/ensure-npm.js",
     "build": "node scripts/bundle.js",
     "build:prod": "node scripts/bundle.js --prod",
     "check:bundle-size": "node scripts/check-bundle-size.js",
+    "check:package-manager": "node scripts/ensure-npm.js && npm ls --depth=0",
+    "check:core-release": "npm run check:package-manager && npm run typecheck && npm run lint && npm run build:prod && npm run check:bundle-size && npm test && npm run smoke:extension && npm run check:extension-smoke && npm run smoke:tonconnect && npm run check:tonconnect-smoke && npm run check:release-metadata",
     "check:release-metadata": "node scripts/check-release-metadata.js",
+    "check:extension-smoke": "node scripts/check-extension-smoke.js",
+    "check:live-chain-smoke": "node scripts/check-live-chain-smoke.js",
+    "check:tonconnect-smoke": "node scripts/check-tonconnect-smoke.js",
+    "check:walletconnect-smoke": "node scripts/check-walletconnect-smoke.js",
     "release:bundle": "node scripts/package-release.js",
+    "smoke:extension": "npm run build:prod && node scripts/smoke-extension.js",
+    "smoke:live-chain": "node scripts/smoke-live-chain.js",
+    "smoke:tonconnect": "npm run build:prod && node scripts/smoke-tonconnect.js",
+    "smoke:walletconnect": "npm run build:prod && node scripts/smoke-walletconnect.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint src --ext .ts",
@@ -29,10 +51,18 @@
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
+    "@scure/bip32": "^1.7.0",
+    "@walletconnect/sign-client": "^2.23.9",
+    "@walletconnect/types": "^2.23.9",
+    "@walletconnect/utils": "^2.23.9",
     "qrcode": "^1.5.4",
     "shell-sdk": "file:../shell-sdk",
     "viem": "^2.39.0"
+  },
+  "overrides": {
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.325",
@@ -42,6 +72,7 @@
     "@typescript-eslint/parser": "^8.58.1",
     "esbuild": "^0.28.0",
     "eslint": "^10.2.0",
+    "playwright": "^1.61.0",
     "prettier": "^3.8.2",
     "typescript": "^5.9.0"
   }

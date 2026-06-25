@@ -47,6 +47,8 @@ const {
   upsertTxRecord,
   getAutoLockMinutes,
   setAutoLockMinutes,
+  getWalletConnectConfig,
+  setWalletConnectConfig,
   getSessionState,
   setSessionState,
   clearSessionState,
@@ -54,9 +56,24 @@ const {
   getConnectedSites,
   addConnectedSite,
   removeConnectedSite,
+  getWalletConnectSessions,
+  upsertWalletConnectSession,
+  removeWalletConnectSession,
+  getTonConnectSessions,
+  upsertTonConnectSession,
+  removeTonConnectSession,
+  getWalletConnectPairings,
+  upsertWalletConnectPairing,
+  removeWalletConnectPairing,
   getPendingKeyRotations,
   addPendingKeyRotation,
   setPendingKeyRotations,
+  getWatchedTokens,
+  addWatchedToken,
+  removeWatchedToken,
+  getBitcoinUtxoPreferences,
+  upsertBitcoinUtxoPreference,
+  upsertBitcoinUtxoPreferences,
 } = await import('../dist/store.js');
 
 describe('store', () => {
@@ -72,8 +89,16 @@ describe('store', () => {
     assert.equal(state.autoLockMinutes, 15);
     assert.equal(state.network.name, 'Shell Devnet');
     assert.equal(state.network.chainId, 424242);
+    assert.equal(state.network.kind, 'shell');
+    assert.equal(state.network.symbol, 'SHELL');
     assert.deepEqual(state.connectedSites, []);
+    assert.deepEqual(state.walletConnectConfig, { projectId: '', relayUrl: '' });
+    assert.deepEqual(state.walletConnectSessions, []);
+    assert.deepEqual(state.tonConnectSessions, []);
+    assert.deepEqual(state.walletConnectPairings, []);
     assert.deepEqual(state.txQueue, []);
+    assert.deepEqual(state.watchedTokens, []);
+    assert.deepEqual(state.bitcoinUtxoPreferences, []);
   });
 
   test('addAccount persists account and deduplicates by pqAddress', async () => {
@@ -117,7 +142,7 @@ describe('store', () => {
   });
 
   test('setNetwork persists and getNetwork retrieves', async () => {
-    const testnet = { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' };
+    const testnet = { name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' };
     await setNetwork(testnet);
     const net = await getNetwork();
     assert.deepEqual(net, testnet);
@@ -168,6 +193,23 @@ describe('store', () => {
     assert.equal(await getAutoLockMinutes(), 30);
   });
 
+  test('walletconnect config can be get and set', async () => {
+    assert.deepEqual(await getWalletConnectConfig(), { projectId: '', relayUrl: '' });
+    await setWalletConnectConfig({
+      projectId: ' project-123 ',
+      relayUrl: ' wss://relay.walletconnect.com ',
+    });
+    assert.deepEqual(await getWalletConnectConfig(), {
+      projectId: 'project-123',
+      relayUrl: 'wss://relay.walletconnect.com',
+    });
+    const state = await getWalletState();
+    assert.deepEqual(state.walletConnectConfig, {
+      projectId: 'project-123',
+      relayUrl: 'wss://relay.walletconnect.com',
+    });
+  });
+
   test('session state can be set, retrieved, and cleared', async () => {
     await setSessionState({ unlockedPqAddress: 'pq1test', unlockedAt: 12345 });
     const s = await getSessionState();
@@ -208,6 +250,156 @@ describe('store', () => {
     assert.equal((await getConnectedSites()).length, 1);
   });
 
+  test('walletconnect sessions can be added, replaced, removed, and expire', async () => {
+    const session = {
+      topic: 'topic-1',
+      origin: 'https://walletconnect.example',
+      accounts: [`0x${'aa'.repeat(32)}`],
+      chainIds: [424242],
+      methods: ['eth_chainId'],
+      grantedAt: 1,
+      lastUsedAt: 2,
+      expiresAt: Date.now() + 60_000,
+    };
+    await upsertWalletConnectSession(session);
+    await upsertWalletConnectSession({ ...session, methods: ['eth_chainId', 'eth_call'], lastUsedAt: 3 });
+    let sessions = await getWalletConnectSessions();
+    assert.equal(sessions.length, 1);
+    assert.deepEqual(sessions[0].methods, ['eth_chainId', 'eth_call']);
+    assert.equal(sessions[0].lastUsedAt, 3);
+
+    await upsertWalletConnectSession({ ...session, topic: 'expired', expiresAt: Date.now() - 1 });
+    sessions = await getWalletConnectSessions();
+    assert.equal(sessions.length, 1);
+
+    await removeWalletConnectSession('topic-1');
+    assert.deepEqual(await getWalletConnectSessions(), []);
+  });
+
+  test('tonconnect sessions can be added, replaced, removed, and expire', async () => {
+    const session = {
+      clientId: 'ton-client-1',
+      origin: 'https://ton.example',
+      manifestUrl: 'https://ton.example/tonconnect-manifest.json',
+      account: 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c',
+      chainId: 607,
+      network: 'mainnet',
+      features: [
+        { name: 'SendTransaction', maxMessages: 4 },
+        { name: 'SignData', types: ['text', 'binary', 'cell'] },
+      ],
+      grantedAt: 1,
+      lastUsedAt: 2,
+      expiresAt: Date.now() + 60_000,
+    };
+    await upsertTonConnectSession(session);
+    await upsertTonConnectSession({ ...session, features: [{ name: 'SendTransaction', maxMessages: 2 }], lastUsedAt: 3 });
+    let sessions = await getTonConnectSessions();
+    assert.equal(sessions.length, 1);
+    assert.deepEqual(sessions[0].features, [{ name: 'SendTransaction', maxMessages: 2 }]);
+    assert.equal(sessions[0].lastUsedAt, 3);
+
+    await upsertTonConnectSession({ ...session, clientId: 'expired', expiresAt: Date.now() - 1 });
+    sessions = await getTonConnectSessions();
+    assert.equal(sessions.length, 1);
+
+    await removeTonConnectSession('ton-client-1');
+    assert.deepEqual(await getTonConnectSessions(), []);
+  });
+
+  test('walletconnect pairings can be added, replaced, removed, and expire', async () => {
+    const pairing = {
+      topic: 'pairing-topic',
+      uri: 'wc:pairing-topic@2?relay-protocol=irn&symKey=abc',
+      relayProtocol: 'irn',
+      symKey: 'abc',
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    await upsertWalletConnectPairing(pairing);
+    await upsertWalletConnectPairing({ ...pairing, symKey: 'def', createdAt: 2 });
+    let pairings = await getWalletConnectPairings();
+    assert.equal(pairings.length, 1);
+    assert.equal(pairings[0].symKey, 'def');
+
+    await upsertWalletConnectPairing({ ...pairing, topic: 'expired', expiresAt: Date.now() - 1 });
+    pairings = await getWalletConnectPairings();
+    assert.equal(pairings.length, 1);
+
+    await removeWalletConnectPairing('pairing-topic');
+    assert.deepEqual(await getWalletConnectPairings(), []);
+  });
+
+  test('watched tokens can be added, replaced, and removed', async () => {
+    const token = {
+      chainKind: 'tron',
+      chainId: 2494104990,
+      contractAddress: 'TToken1111111111111111111111111111111',
+      symbol: 'USDT',
+      decimals: 6,
+      addedAt: 1,
+    };
+    await addWatchedToken(token);
+    await addWatchedToken({ ...token, symbol: 'USDTx', addedAt: 2 });
+    let tokens = await getWatchedTokens();
+    assert.equal(tokens.length, 1);
+    assert.equal(tokens[0].symbol, 'USDTx');
+    assert.equal(tokens[0].addedAt, 2);
+
+    const state = await getWalletState();
+    assert.equal(state.watchedTokens.length, 1);
+
+    await removeWatchedToken('tron', 2494104990, token.contractAddress);
+    tokens = await getWatchedTokens();
+    assert.deepEqual(tokens, []);
+  });
+
+  test('bitcoin UTXO preferences can be added, replaced, and pruned when empty', async () => {
+    const key = `${'a'.repeat(64)}:1`;
+    await upsertBitcoinUtxoPreference({
+      key: key.toUpperCase(),
+      label: '  savings coin  ',
+      locked: true,
+      updatedAt: 1,
+    });
+    let preferences = await getBitcoinUtxoPreferences();
+    assert.equal(preferences.length, 1);
+    assert.equal(preferences[0].key, key);
+    assert.equal(preferences[0].label, 'savings coin');
+    assert.equal(preferences[0].locked, true);
+
+    await upsertBitcoinUtxoPreference({
+      key,
+      label: '',
+      locked: false,
+      updatedAt: 2,
+    });
+    preferences = await getBitcoinUtxoPreferences();
+    assert.deepEqual(preferences, []);
+  });
+
+  test('bitcoin UTXO preferences can be batch locked, unlocked, and imported', async () => {
+    const first = `${'b'.repeat(64)}:0`;
+    const second = `${'c'.repeat(64)}:1`;
+    await upsertBitcoinUtxoPreferences([
+      { key: first, label: 'cold', locked: true, updatedAt: 1 },
+      { key: second, label: 'change', locked: false, updatedAt: 1 },
+    ]);
+    let preferences = await getBitcoinUtxoPreferences();
+    assert.equal(preferences.length, 2);
+    assert.equal(preferences.find((item) => item.key === first).locked, true);
+    assert.equal(preferences.find((item) => item.key === second).label, 'change');
+
+    await upsertBitcoinUtxoPreferences([
+      { key: first, label: 'cold', locked: false, updatedAt: 2 },
+      { key: second, label: '', locked: false, updatedAt: 2 },
+    ]);
+    preferences = await getBitcoinUtxoPreferences();
+    assert.deepEqual(preferences.map((item) => item.key), [first]);
+    assert.equal(preferences[0].label, 'cold');
+    assert.equal(preferences[0].locked, undefined);
+  });
+
   test('clearAllData resets everything to defaults', async () => {
     await addAccount({ pqAddress: 'pq1x', hexAddress: '0x1', keystoreJson: '{}' });
     await setNetwork({ name: 'Shell Testnet', chainId: 12345, rpcUrl: 'https://rpc.testnet.shell.network' });
@@ -238,5 +430,81 @@ describe('store', () => {
     const stored = await localArea.get('connectedSites');
     assert.equal(typeof stored.connectedSites[0], 'object');
     assert.equal(stored.connectedSites[0].origin, 'https://legacy.example');
+  });
+
+  test('getNetwork normalizes legacy networks to Shell kind', async () => {
+    await setNetwork({ name: 'Legacy Shell', chainId: 7, rpcUrl: 'https://legacy.shell.example' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'shell');
+    assert.equal(network.symbol, 'SHELL');
+    assert.equal(network.rpcProvenance, 'user-custom');
+  });
+
+  test('getNetwork preserves Solana networks and default symbol', async () => {
+    await setNetwork({ name: 'Solana Devnet', chainId: 103, rpcUrl: 'https://api.devnet.solana.com', kind: 'solana' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'solana');
+    assert.equal(network.symbol, 'SOL');
+    assert.equal(network.rpcProvenance, 'official-public');
+  });
+
+  test('getNetwork preserves Bitcoin networks and default symbol', async () => {
+    await setNetwork({ name: 'Bitcoin Mainnet', chainId: 8332, rpcUrl: 'https://blockstream.info/api', kind: 'bitcoin' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'bitcoin');
+    assert.equal(network.symbol, 'BTC');
+    assert.equal(network.rpcProvenance, 'third-party-public');
+  });
+
+  test('getNetwork preserves Bitcoin Testnet networks and default symbol', async () => {
+    await setNetwork({ name: 'Bitcoin Testnet', chainId: 18332, rpcUrl: 'https://blockstream.info/testnet/api', kind: 'bitcoin' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'bitcoin');
+    assert.equal(network.symbol, 'BTC');
+  });
+
+  test('getNetwork preserves Cosmos networks and default symbol', async () => {
+    await setNetwork({ name: 'Cosmos Hub', chainId: 118, rpcUrl: 'https://rest.cosmos.directory/cosmoshub', kind: 'cosmos' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'cosmos');
+    assert.equal(network.symbol, 'ATOM');
+    assert.equal(network.addressPrefix, 'cosmos');
+    assert.equal(network.nativeDenom, 'uatom');
+    assert.equal(network.nativeDecimals, 6);
+  });
+
+  test('getNetwork preserves TON networks and default symbol', async () => {
+    await setNetwork({ name: 'TON Mainnet', chainId: 607, rpcUrl: 'https://toncenter.com/api/v2', kind: 'ton' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'ton');
+    assert.equal(network.symbol, 'TON');
+    assert.equal(network.rpcProvenance, 'third-party-public');
+  });
+
+  test('getNetwork preserves Aptos networks and official RPC provenance', async () => {
+    await setNetwork({ name: 'Aptos Testnet', chainId: 2, rpcUrl: 'https://fullnode.testnet.aptoslabs.com/v1', kind: 'aptos' });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'aptos');
+    assert.equal(network.symbol, 'APT');
+    assert.equal(network.rpcProvenance, 'official-public');
+  });
+
+  test('getNetwork preserves Osmosis metadata', async () => {
+    await setNetwork({
+      name: 'Osmosis Mainnet',
+      chainId: 118007,
+      rpcUrl: 'https://rest.cosmos.directory/osmosis',
+      kind: 'cosmos',
+      symbol: 'OSMO',
+      addressPrefix: 'osmo',
+      nativeDenom: 'uosmo',
+      nativeDecimals: 6,
+    });
+    const network = await getNetwork();
+    assert.equal(network.kind, 'cosmos');
+    assert.equal(network.symbol, 'OSMO');
+    assert.equal(network.addressPrefix, 'osmo');
+    assert.equal(network.nativeDenom, 'uosmo');
+    assert.equal(network.nativeDecimals, 6);
   });
 });
