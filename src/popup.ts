@@ -408,7 +408,11 @@ function escapeHtml(value: unknown): string {
 }
 
 function renderError(): string {
-  return state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : '';
+  return state.error ? `<div class="error status-card status-card-error">${escapeHtml(state.error)}</div>` : '';
+}
+
+export function __setPopupStateForTest(patch: Partial<AppState>): void {
+  Object.assign(state, patch);
 }
 
 function send<T = unknown>(type: string, data: Record<string, unknown> = {}): Promise<T> {
@@ -920,7 +924,7 @@ function renderLocked(): string {
   `;
 }
 
-function renderWallet(): string {
+export function renderWallet(): string {
   const pendingTxs = state.txQueue.filter((tx) => tx.status === 'pending').slice(0, 3);
   const networkWarning = getNetworkWarning();
   const failedTx = getLatestFailedTx();
@@ -939,7 +943,7 @@ function renderWallet(): string {
       : 'unknown';
   const storageProfileHtml = storageProfile
     ? `<span class="storage-badge storage-badge-${storageProfileClass}" title="Node storage mode">
-        ${storageProfile === 'archive' ? '🗄' : storageProfile === 'full' ? '💾' : '🔍'} ${escapeHtml(storageProfile)}
+        ${storageProfile === 'archive' ? 'Archive' : storageProfile === 'full' ? 'Full' : 'Light'} ${escapeHtml(storageProfile)}
        </span>`
     : '';
   const rpcProvenanceHtml = `<span class="network-provenance" title="${escapeHtml(state.network.rpcUrl)}">${escapeHtml(formatRpcProvenance(state.network))}</span>`;
@@ -947,9 +951,9 @@ function renderWallet(): string {
   // Node info panel — shown when shell_getNodeInfo succeeds.
   const nodeInfoHtml = state.nodeInfo
     ? `<div class="node-info-card">
-        <span class="node-info-item" title="Node version">📦 ${escapeHtml(state.nodeInfo.version)}</span>
-        <span class="node-info-item" title="Block height">🧱 #${state.nodeInfo.block_height.toLocaleString()}</span>
-        <span class="node-info-item" title="Peer count">🔗 ${state.nodeInfo.peer_count} peer${state.nodeInfo.peer_count === 1 ? '' : 's'}</span>
+        <span class="node-info-item" title="Node version">Version ${escapeHtml(state.nodeInfo.version)}</span>
+        <span class="node-info-item" title="Block height">Height #${state.nodeInfo.block_height.toLocaleString()}</span>
+        <span class="node-info-item" title="Peer count">${state.nodeInfo.peer_count} peer${state.nodeInfo.peer_count === 1 ? '' : 's'}</span>
       </div>`
     : '';
 
@@ -980,45 +984,56 @@ function renderWallet(): string {
     : '';
   return `
     <div class="wallet-view">
-      <div class="wallet-header">
+      <div class="wallet-header compact-header">
         <select id="quick-net-select" class="quick-net-select" title="Switch network">
           ${renderNetworkOptions()}
         </select>
         ${rpcProvenanceHtml}
         ${storageProfileHtml}
-        <button class="btn-icon" id="btn-accounts" title="Accounts (${state.accounts.length})">👤</button>
-        <button class="btn-icon" id="btn-settings" title="Settings">⚙</button>
-        <button class="btn-icon" id="btn-lock" title="Lock wallet">🔒</button>
+        <button class="btn-icon" id="btn-accounts" title="Accounts (${state.accounts.length})">Acct</button>
+        <button class="btn-icon" id="btn-settings" title="Settings">Set</button>
+        <button class="btn-icon" id="btn-lock" title="Lock wallet">Lock</button>
       </div>
-      <div class="address-box">
-        <span class="monospace address-short">${escapeHtml(truncate(state.pqAddress))}</span>
-        <button class="btn-copy" id="btn-copy-addr" title="Copy address">⧉</button>
+      <div class="wallet-hero">
+        <div class="address-box">
+          <span class="label">Address</span>
+          <span class="monospace address-short">${escapeHtml(truncate(state.pqAddress))}</span>
+          <button class="btn-copy" id="btn-copy-addr" title="Copy address">Copy</button>
+        </div>
+        <div class="balance-section">
+          <span class="balance-amount">${escapeHtml(state.balanceFormatted)}</span>
+          <span class="balance-unit">${escapeHtml(chainSymbol())}</span>
+          <button class="btn-refresh" id="btn-refresh" title="Refresh balance">Refresh</button>
+        </div>
+        <div class="wallet-meta">
+          <span>Configured chain: ${state.network.chainId}</span>
+          <span>${state.detectedChainId == null ? 'RPC unavailable' : `RPC chain: ${state.detectedChainId}`}</span>
+          <span>${renderAccountModelMeta()}</span>
+        </div>
+        <details class="chain-health status-card ${networkWarning ? 'status-card-warning' : state.detectedChainId == null ? 'status-card-info' : 'status-card-success'}" ${networkWarning ? 'open' : ''}>
+          <summary class="chain-health-summary">
+            <span class="chain-health-title">${networkWarning ? 'Chain health needs attention' : state.detectedChainId == null ? 'RPC status pending' : 'Chain health OK'}</span>
+            <span class="chain-health-action">${networkWarning ? 'Review' : 'Details'}</span>
+          </summary>
+          <div class="status-card-detail">
+            ${networkWarning ? escapeHtml(networkWarning) : state.detectedChainId == null ? 'Refresh balance or check the RPC endpoint if this persists.' : 'RPC chain matches the configured network.'}
+          </div>
+        </details>
+        ${nodeInfoHtml}
       </div>
-      <div class="balance-section">
-        <span class="balance-amount">${escapeHtml(state.balanceFormatted)}</span>
-        <span class="balance-unit">${escapeHtml(chainSymbol())}</span>
-        <button class="btn-refresh" id="btn-refresh" title="Refresh balance">↻</button>
-      </div>
-      <div class="wallet-meta">
-        <span>Configured chain: ${state.network.chainId}</span>
-        <span>${state.detectedChainId == null ? 'RPC unavailable' : `RPC chain: ${state.detectedChainId}`}</span>
-        <span>${renderAccountModelMeta()}</span>
-      </div>
-      ${nodeInfoHtml}
-      ${networkWarning ? `<div class="status-card status-card-warning">${escapeHtml(networkWarning)}</div>` : ''}
-      <div class="action-row">
+      <div class="action-grid ${currentChainUiMetadata().capabilities.utxo ? 'action-grid-four' : ''}">
         <button class="btn-action" id="btn-send" ${currentChainUiMetadata().capabilities.nativeTransfers ? '' : 'disabled'}>
-          <span>↑</span>Send
+          <span>Send</span><small>Transfer funds</small>
         </button>
         <button class="btn-action" id="btn-receive">
-          <span>↓</span>Receive
+          <span>Receive</span><small>Show address</small>
         </button>
         <button class="btn-action" id="btn-history">
-          <span>☰</span>History
+          <span>History</span><small>Activity</small>
         </button>
         ${currentChainUiMetadata().capabilities.utxo ? `
           <button class="btn-action" id="btn-utxo-manager">
-            <span>☷</span>UTXOs
+            <span>UTXOs</span><small>Coin control</small>
           </button>
         ` : ''}
       </div>
@@ -1049,11 +1064,11 @@ function renderCosmosDenomAssets(): string {
           </div>
         </div>
       `).join('')
-    : '<div class="empty-state compact-empty">No Cosmos SDK balances found</div>';
+    : '<div class="empty-panel compact-empty">No Cosmos SDK balances found</div>';
   return `
     <div class="token-card">
-      <div class="token-card-header">
-        <span>Cosmos SDK Balances</span>
+      <div class="section-header">
+        <span class="section-header-title">Cosmos SDK Balances</span>
       </div>
       ${rows}
     </div>
@@ -1078,11 +1093,11 @@ function renderCosmosStakingPositions(): string {
           <button class="btn-secondary btn-compact btn-cosmos-withdraw-rewards" data-validator="${escapeHtml(position.validatorAddress)}">Rewards</button>
         </div>
       `).join('')
-    : '<div class="empty-state compact-empty">No active Cosmos delegations found</div>';
+    : '<div class="empty-panel compact-empty">No active Cosmos delegations found</div>';
   return `
     <div class="token-card">
-      <div class="token-card-header">
-        <span>Cosmos Staking</span>
+      <div class="section-header">
+        <span class="section-header-title">Cosmos Staking</span>
         <button class="btn-secondary btn-compact" id="btn-cosmos-delegate">Delegate</button>
       </div>
       ${rows}
@@ -1107,10 +1122,10 @@ function renderCosmosRedelegations(): string {
   `).join('');
   return `
     <div class="token-card">
-      <div class="token-card-header">
-        <span>Cosmos Redelegations</span>
+      <div class="section-header">
+        <span class="section-header-title">Cosmos Redelegations</span>
       </div>
-      <div class="empty-state compact-empty">
+      <div class="empty-panel compact-empty">
         A validator receiving a redelegation cannot be used as a new redelegation source until its cooldown completes.
       </div>
       ${rows}
@@ -1153,11 +1168,11 @@ function renderCosmosValidators(): string {
           </div>
         `;
       }).join('')
-    : '<div class="empty-state compact-empty">No Cosmos validators found</div>';
+    : '<div class="empty-panel compact-empty">No Cosmos validators found</div>';
   return `
     <div class="token-card">
-      <div class="token-card-header">
-        <span>Cosmos Validators</span>
+      <div class="section-header">
+        <span class="section-header-title">Cosmos Validators</span>
       </div>
       ${rows}
     </div>
@@ -1196,11 +1211,11 @@ function renderCosmosGovernanceProposals(): string {
           </div>
         `;
       }).join('')
-    : '<div class="empty-state compact-empty">No governance proposals found</div>';
+    : '<div class="empty-panel compact-empty">No governance proposals found</div>';
   return `
     <div class="token-card">
-      <div class="token-card-header">
-        <span>Cosmos Governance</span>
+      <div class="section-header">
+        <span class="section-header-title">Cosmos Governance</span>
         <span class="muted">Voting power ${escapeHtml(votingPower)}</span>
       </div>
       ${rows}
@@ -1294,11 +1309,11 @@ function renderTokenAssets(): string {
           </div>
         `;
       }).join('')
-    : `<div class="empty-state compact-empty">No ${escapeHtml(tokenStandard)} tokens added</div>`;
+    : `<div class="empty-panel compact-empty">No ${escapeHtml(tokenStandard)} tokens added</div>`;
   return `
     <div class="token-card">
-      <div class="token-card-header">
-        <span>${escapeHtml(tokenStandard)} Tokens</span>
+      <div class="section-header">
+        <span class="section-header-title">${escapeHtml(tokenStandard)} Tokens</span>
         <button class="btn-secondary btn-compact" id="btn-add-token">Add Token</button>
       </div>
       ${rows}
@@ -1341,68 +1356,84 @@ function renderCosmosIbcTools(): string {
   `;
 }
 
-function renderSend(): string {
+export function renderSend(): string {
   const sendUnavailableReason = getSendUnavailableReason();
   const metadata = currentChainUiMetadata();
   const supportsSmartContracts = metadata.capabilities.smartContracts;
   const sendDisabled = sendUnavailableReason !== '';
   return `
     <div class="view-form">
-      <button class="btn-back" id="btn-back">← Back</button>
-      <h2>Send ${escapeHtml(chainSymbol())}</h2>
-      ${sendUnavailableReason ? `<div class="status-card status-card-warning">${escapeHtml(sendUnavailableReason)}</div>` : ''}
-      <label>To Address (${escapeHtml(metadata.addressLabel)})
-        <input type="text" id="send-to" placeholder="${escapeHtml(metadata.addressPlaceholder)}" value="${escapeHtml(state.sendTo)}" />
-      </label>
-      ${metadata.capabilities.utxo && isBitcoinAddressReuse(state.sendTo) ? `
-        <div class="status-card status-card-warning">Recipient matches this wallet address. Reusing a Bitcoin address can reduce privacy; prefer a fresh receive address when possible.</div>
-      ` : ''}
-      <label>Amount (${escapeHtml(chainSymbol())})
-        <input type="number" id="send-value" placeholder="0.0" step="any" min="0" value="${escapeHtml(state.sendValue)}" />
-      </label>
-      ${(state.network.kind ?? 'shell') === 'cosmos' ? `
-        <label>Memo / IBC route memo
-          <input type="text" id="send-cosmos-memo" placeholder='{"forward":{"receiver":"cosmos1...","channel":"channel-0"}}' value="${escapeHtml(state.sendCosmosMemo)}" />
-        </label>
-        ${renderCosmosIbcTools()}
-      ` : ''}
-      ${supportsSmartContracts ? `
-        <label>Calldata (optional 0x...)
-          <input type="text" id="send-data" placeholder="0x" value="${escapeHtml(state.sendData)}" />
-        </label>
-        <label>Gas Limit (optional)
-          <input type="number" id="send-gas-limit" placeholder="21000" min="21000" value="${escapeHtml(state.sendGasLimit)}" />
-        </label>
-        <label>Max Fee Per Gas (optional, wei)
-          <input type="number" id="send-max-fee" placeholder="1000000000" min="0" value="${escapeHtml(state.sendMaxFeePerGas)}" />
-        </label>
-        <label>Priority Fee (optional, wei)
-          <input type="number" id="send-priority-fee" placeholder="100000000" min="0" value="${escapeHtml(state.sendMaxPriorityFeePerGas)}" />
-        </label>
-      ` : ''}
-      ${metadata.capabilities.utxo ? `
-        <label>Fee Priority
-          <select id="send-fee-preset">
-            ${renderBitcoinFeePresetOption('auto', 'Auto')}
-            ${renderBitcoinFeePresetOption('slow', 'Slow - 2 sat/vB')}
-            ${renderBitcoinFeePresetOption('normal', 'Normal - 5 sat/vB')}
-            ${renderBitcoinFeePresetOption('fast', 'Fast - 10 sat/vB')}
-            ${renderBitcoinFeePresetOption('custom', 'Custom')}
-          </select>
-        </label>
-        <label>Custom Fee Rate (sat/vB)
-          <input type="number" id="send-fee-rate" placeholder="Auto" step="1" min="1" value="${escapeHtml(state.sendBitcoinFeeRate)}" ${state.sendBitcoinFeePreset === 'custom' ? '' : 'disabled'} />
-        </label>
-      ` : ''}
-      <div class="fee-info">
-        <span class="label">${metadata.capabilities.accountNonce ? metadata.feeModel : 'Fee model:'}</span>
-        <span class="fee-amount">${metadata.capabilities.accountNonce ? state.nonce == null ? 'unknown' : state.nonce : metadata.feeModel}</span>
+      <button class="btn-back" id="btn-back">Back</button>
+      <div class="screen-title-row">
+        <h2>Send ${escapeHtml(chainSymbol())}</h2>
+        <span class="network-provenance">${escapeHtml(state.network.name)}</span>
       </div>
-      ${metadata.capabilities.utxo ? renderBitcoinSendPreview() : ''}
+      ${sendUnavailableReason ? `<div class="status-card status-card-warning">${escapeHtml(sendUnavailableReason)}</div>` : ''}
+      <div class="form-section" data-section="send-basic">
+        <div class="section-header">
+          <span class="section-header-title">Basic</span>
+          <span class="muted">${escapeHtml(metadata.addressLabel)}</span>
+        </div>
+        <label>To Address
+          <input type="text" id="send-to" placeholder="${escapeHtml(metadata.addressPlaceholder)}" value="${escapeHtml(state.sendTo)}" />
+        </label>
+        ${metadata.capabilities.utxo && isBitcoinAddressReuse(state.sendTo) ? `
+          <div class="status-card status-card-warning">Recipient matches this wallet address. Prefer a fresh receive address before sending.</div>
+        ` : ''}
+        <label>Amount (${escapeHtml(chainSymbol())})
+          <input type="number" id="send-value" placeholder="0.0" step="any" min="0" value="${escapeHtml(state.sendValue)}" />
+        </label>
+      </div>
+      <details class="disclosure" ${metadata.capabilities.utxo || supportsSmartContracts || (state.network.kind ?? 'shell') === 'cosmos' ? '' : 'open'}>
+        <summary>Fees & Advanced</summary>
+        <div class="disclosure-body">
+          ${(state.network.kind ?? 'shell') === 'cosmos' ? `
+            <label>Memo / IBC route memo
+              <input type="text" id="send-cosmos-memo" placeholder='{"forward":{"receiver":"cosmos1...","channel":"channel-0"}}' value="${escapeHtml(state.sendCosmosMemo)}" />
+            </label>
+            ${renderCosmosIbcTools()}
+          ` : ''}
+          ${supportsSmartContracts ? `
+            <label>Calldata (optional 0x...)
+              <input type="text" id="send-data" placeholder="0x" value="${escapeHtml(state.sendData)}" />
+            </label>
+            <label>Gas Limit (optional)
+              <input type="number" id="send-gas-limit" placeholder="21000" min="21000" value="${escapeHtml(state.sendGasLimit)}" />
+            </label>
+            <label>Max Fee Per Gas (optional, wei)
+              <input type="number" id="send-max-fee" placeholder="1000000000" min="0" value="${escapeHtml(state.sendMaxFeePerGas)}" />
+            </label>
+            <label>Priority Fee (optional, wei)
+              <input type="number" id="send-priority-fee" placeholder="100000000" min="0" value="${escapeHtml(state.sendMaxPriorityFeePerGas)}" />
+            </label>
+          ` : ''}
+          ${metadata.capabilities.utxo ? `
+            <label>Fee Priority
+              <select id="send-fee-preset">
+                ${renderBitcoinFeePresetOption('auto', 'Auto')}
+                ${renderBitcoinFeePresetOption('slow', 'Slow - 2 sat/vB')}
+                ${renderBitcoinFeePresetOption('normal', 'Normal - 5 sat/vB')}
+                ${renderBitcoinFeePresetOption('fast', 'Fast - 10 sat/vB')}
+                ${renderBitcoinFeePresetOption('custom', 'Custom')}
+              </select>
+            </label>
+            <label>Custom Fee Rate (sat/vB)
+              <input type="number" id="send-fee-rate" placeholder="Auto" step="1" min="1" value="${escapeHtml(state.sendBitcoinFeeRate)}" ${state.sendBitcoinFeePreset === 'custom' ? '' : 'disabled'} />
+            </label>
+          ` : ''}
+          <div class="fee-info">
+            <span class="label">${metadata.capabilities.accountNonce ? metadata.feeModel : 'Fee model:'}</span>
+            <span class="fee-amount">${metadata.capabilities.accountNonce ? state.nonce == null ? 'unknown' : state.nonce : metadata.feeModel}</span>
+          </div>
+        </div>
+      </details>
+      ${metadata.capabilities.utxo ? `<div class="form-section" data-section="send-preview">${renderBitcoinSendPreview()}</div>` : ''}
       ${renderError()}
-      <button id="btn-send-confirm" class="btn-primary" ${sendDisabled ? 'disabled' : ''}>
-        ${sendDisabled ? 'Sending unavailable' : `Send ${escapeHtml(chainSymbol())}`}
-      </button>
+      <div class="sticky-actions single-action">
+        <button id="btn-send-confirm" class="btn-primary" ${sendDisabled ? 'disabled' : ''}>
+          ${sendDisabled ? 'Sending unavailable' : `Send ${escapeHtml(chainSymbol())}`}
+        </button>
+      </div>
     </div>
   `;
 }
@@ -1410,8 +1441,11 @@ function renderSend(): string {
 function renderBitcoinSendPreview(): string {
   const preview = state.sendPreview;
   return `
-    <div class="status-card">
-      <div class="section-title">Bitcoin fee preview</div>
+    <div class="send-preview-panel">
+      <div class="section-header">
+        <span class="section-header-title">Chain Preview</span>
+        <span class="muted">Bitcoin fee preview</span>
+      </div>
       ${preview ? `
         <div class="meta-grid">
           <span>Amount</span><strong>${escapeHtml(formatTokenDisplayValue(preview.amountSats, 8))} BTC</strong>
@@ -1908,7 +1942,7 @@ function renderSwitchAccount(): string {
   `;
 }
 
-function renderSettings(): string {
+export function renderSettings(): string {
   const connectedSitesHtml = state.connectedSites.length > 0
     ? state.connectedSites.map((site) => `
         <div class="site-item">
@@ -1922,7 +1956,7 @@ function renderSettings(): string {
           <button class="btn-secondary btn-site-revoke" data-origin="${escapeHtml(site.origin)}">Revoke</button>
         </div>
       `).join('')
-    : '<div class="empty-state compact-empty">No connected dApps yet</div>';
+    : '<div class="empty-panel compact-empty">No connected dApps yet</div>';
   const walletConnectPairingsHtml = state.walletConnectPairings.length > 0
     ? state.walletConnectPairings.map((pairing) => `
         <div class="site-item">
@@ -1936,7 +1970,7 @@ function renderSettings(): string {
           <button class="btn-secondary btn-wc-pairing-remove" data-topic="${escapeHtml(pairing.topic)}">Remove</button>
         </div>
       `).join('')
-    : '<div class="empty-state compact-empty">No WalletConnect pairings yet</div>';
+    : '<div class="empty-panel compact-empty">No WalletConnect pairings yet</div>';
   const relayStatus = state.walletConnectRelayStatus;
   const relayStatusHtml = `
     <div class="status-card ${relayStatus?.lastError ? 'status-card-error' : relayStatus?.initialized ? 'status-card-success' : ''}">
@@ -1950,54 +1984,67 @@ function renderSettings(): string {
   `;
   return `
     <div class="view-form">
-      <button class="btn-back" id="btn-back">← Back</button>
+      <button class="btn-back" id="btn-back">Back</button>
       <h2>Settings</h2>
 
-      <div class="section-title">Network</div>
-      <select id="network-select" class="select-input">
-        ${renderNetworkOptions()}
-        <option value="custom">Custom RPC…</option>
-      </select>
-      <div id="custom-rpc-section" style="display:none">
-        <label>Chain ID
-          <input type="number" id="custom-chain-id" placeholder="424242" />
-        </label>
-        <label>RPC URL
-          <input type="text" id="custom-rpc-url" placeholder="http://127.0.0.1:8545" />
-        </label>
-        <label>Network Name
-          <input type="text" id="custom-net-name" placeholder="My Network" />
-        </label>
-        <button id="btn-save-custom" class="btn-secondary">Save Custom RPC</button>
-      </div>
+      <section class="form-section settings-section">
+        <div class="section-header"><span class="section-header-title">Network</span></div>
+        <select id="network-select" class="select-input">
+          ${renderNetworkOptions()}
+          <option value="custom">Custom RPC…</option>
+        </select>
+        <div id="custom-rpc-section" class="custom-rpc-panel" style="display:none">
+          <label>Chain ID
+            <input type="number" id="custom-chain-id" placeholder="424242" />
+          </label>
+          <label>RPC URL
+            <input type="text" id="custom-rpc-url" placeholder="http://127.0.0.1:8545" />
+          </label>
+          <label>Network Name
+            <input type="text" id="custom-net-name" placeholder="My Network" />
+          </label>
+          <button id="btn-save-custom" class="btn-secondary">Save Custom RPC</button>
+        </div>
+      </section>
 
-      <div class="section-title" style="margin-top:16px">Security</div>
-      <label>Auto-lock (minutes, 0 = disabled)
-        <input type="number" id="auto-lock-minutes" min="0" value="${escapeHtml(state.autoLockMinutes)}" />
-      </label>
-      <button id="btn-save-auto-lock" class="btn-secondary">Save Auto-lock</button>
-      <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
-      <button id="btn-reveal-phrase" class="btn-secondary">Reveal Recovery Phrase</button>
-      <button id="btn-advanced-pq" class="btn-secondary">Advanced PQ</button>
-      <button id="btn-reset" class="btn-danger">Reset Wallet</button>
+      <section class="form-section settings-section">
+        <div class="section-header"><span class="section-header-title">Security</span></div>
+        <label>Auto-lock (minutes, 0 = disabled)
+          <input type="number" id="auto-lock-minutes" min="0" value="${escapeHtml(state.autoLockMinutes)}" />
+        </label>
+        <button id="btn-save-auto-lock" class="btn-secondary">Save Auto-lock</button>
+        <button id="btn-export-ks" class="btn-secondary">Export Keystore</button>
+        <button id="btn-reveal-phrase" class="btn-secondary">Reveal Recovery Phrase</button>
+        <button id="btn-advanced-pq" class="btn-secondary">Advanced PQ</button>
+      </section>
 
-      <div class="section-title" style="margin-top:16px">Connected dApps</div>
-      <div class="site-list">${connectedSitesHtml}</div>
+      <section class="form-section settings-section">
+        <div class="section-header"><span class="section-header-title">Connected dApps</span></div>
+        <div class="site-list">${connectedSitesHtml}</div>
+      </section>
 
-      <div class="section-title" style="margin-top:16px">WalletConnect</div>
-      ${relayStatusHtml}
-      <label>Project ID
-        <input type="text" id="wc-project-id" placeholder="WalletConnect Project ID" value="${escapeHtml(state.walletConnectProjectId)}" />
-      </label>
-      <label>Relay URL
-        <input type="text" id="wc-relay-url" placeholder="wss://relay.walletconnect.com" value="${escapeHtml(state.walletConnectRelayUrl)}" />
-      </label>
-      <button id="btn-save-wc-config" class="btn-secondary">Save WalletConnect</button>
-      <label>Pairing URI
-        <input type="text" id="wc-pairing-uri" placeholder="wc:topic@2?relay-protocol=irn&symKey=…" value="${escapeHtml(state.walletConnectUri)}" />
-      </label>
-      <button id="btn-wc-pair" class="btn-secondary">Pair WalletConnect</button>
-      <div class="site-list">${walletConnectPairingsHtml}</div>
+      <section class="form-section settings-section">
+        <div class="section-header"><span class="section-header-title">WalletConnect</span></div>
+        ${relayStatusHtml}
+        <label>Project ID
+          <input type="text" id="wc-project-id" placeholder="WalletConnect Project ID" value="${escapeHtml(state.walletConnectProjectId)}" />
+        </label>
+        <label>Relay URL
+          <input type="text" id="wc-relay-url" placeholder="wss://relay.walletconnect.com" value="${escapeHtml(state.walletConnectRelayUrl)}" />
+        </label>
+        <button id="btn-save-wc-config" class="btn-secondary">Save WalletConnect</button>
+        <label>Pairing URI
+          <input type="text" id="wc-pairing-uri" placeholder="wc:topic@2?relay-protocol=irn&symKey=…" value="${escapeHtml(state.walletConnectUri)}" />
+        </label>
+        <button id="btn-wc-pair" class="btn-secondary">Pair WalletConnect</button>
+        <div class="site-list">${walletConnectPairingsHtml}</div>
+      </section>
+
+      <section class="form-section settings-section danger-zone">
+        <div class="section-header"><span class="section-header-title">Danger Zone</span></div>
+        <div class="status-card status-card-error">Reset deletes local wallet data. Export your keystore or recovery phrase first.</div>
+        <button id="btn-reset" class="btn-danger">Reset Wallet</button>
+      </section>
     </div>
   `;
 }
@@ -2078,7 +2125,30 @@ export function summarizeCosmosValidatorRisk(validator: CosmosValidatorSummary):
   return { level: 'OK', guidance: 'bonded with no detected slashing or commission warnings' };
 }
 
-function renderApprovalRequest(): string {
+function approvalSummary(request: ApprovalRequest): {
+  account: string;
+  chain: string;
+  method: string;
+  primaryValue: string;
+  recipient: string;
+  risk: string;
+} {
+  const payload = request.payload;
+  const account = String(payload.account ?? payload.accounts ?? '');
+  const chain = payload.chainKind || payload.chainId
+    ? `${String(payload.chainKind ?? 'chain')}:${String(payload.chainId ?? '')}`
+    : String(payload.network ?? payload.chainIds ?? state.network.name);
+  const method = String(payload.method ?? payload.signMode ?? request.kind);
+  const token = payload.tokenSymbol ?? payload.tokenContract;
+  const primaryValue = token
+    ? `${String(payload.value ?? payload.amount ?? '0')} ${String(token)}`
+    : String(payload.value ?? payload.totalNanotons ?? payload.amountOctas ?? '0');
+  const recipient = String(payload.to ?? payload.recipient ?? payload.manifestUrl ?? payload.topic ?? '');
+  const risk = String(payload.riskSummary ?? payload.riskLevel ?? (request.kind.includes('sign') ? 'Review signing details before approving.' : 'Review request details before approving.'));
+  return { account, chain, method, primaryValue, recipient, risk };
+}
+
+export function renderApprovalRequest(): string {
   const request = state.approvalRequest;
   if (!request) {
     return `
@@ -2088,6 +2158,7 @@ function renderApprovalRequest(): string {
       </div>
     `;
   }
+  const summary = approvalSummary(request);
 
   // Detect AA batch transaction (tx_type = 0x7e)
   const isBatchTx = request.kind === 'send-transaction' &&
@@ -2472,15 +2543,31 @@ function renderApprovalRequest(): string {
   }
 
   return `
-    <div class="view-form">
-      <div class="logo">🛡️</div>
-      <h2>Approve Request</h2>
-      <p class="hint">${escapeHtml(request.origin)}</p>
+    <div class="view-form approval-view">
+      <div class="approval-hero shell-card">
+        <div class="section-header">
+          <span class="section-header-title">Approval Request</span>
+          <span class="network-provenance">${escapeHtml(summary.chain)}</span>
+        </div>
+        <h2>${escapeHtml(summary.method)}</h2>
+        <p class="hint">${escapeHtml(request.origin)}</p>
+        <div class="meta-grid approval-summary-grid">
+          <span>Account</span><strong class="monospace">${escapeHtml(summary.account || 'Current account')}</strong>
+          <span>Recipient</span><strong class="monospace">${escapeHtml(summary.recipient || 'Not specified')}</strong>
+          <span>Value</span><strong>${escapeHtml(summary.primaryValue)}</strong>
+          <span>Risk</span><strong>${escapeHtml(summary.risk)}</strong>
+        </div>
+      </div>
       <div class="status-card status-card-warning">This site is requesting: <strong>${escapeHtml(request.kind)}</strong></div>
-      ${detailsHtml}
+      <details class="disclosure approval-details">
+        <summary>Details</summary>
+        <div class="disclosure-body">${detailsHtml}</div>
+      </details>
       ${renderError()}
-      <button id="btn-approval-approve" class="btn-primary">Approve</button>
-      <button id="btn-approval-reject" class="btn-secondary">Reject</button>
+      <div class="sticky-actions approval-actions">
+        <button id="btn-approval-reject" class="btn-danger">Reject</button>
+        <button id="btn-approval-approve" class="btn-primary">Approve</button>
+      </div>
     </div>
   `;
 }
