@@ -19,8 +19,10 @@ import type {
   CosmosStakingPosition,
   CosmosValidatorSummary,
   ConnectedSitePermission,
+  MultichainAddress,
   Network,
   PortfolioAsset,
+  StoredAccount,
   TonConnectSession,
   WalletConnectConfig,
   WalletConnectPairing,
@@ -99,9 +101,12 @@ interface AppState {
   toast: string;
   nodeInfo: WalletNodeInfo | null;
   // Multi-account state
-  accounts: Array<{ pqAddress: string; chainAddresses?: Record<string, string> }>;
+  accounts: StoredAccount[];
+  activeAccountId: string;
+  activeMultichainAccount: StoredAccount | null;
   selectedTxHash: string;
   switchTargetAddress: string;
+  switchTargetAccountId: string;
   // Temp fields for flows
   pendingKeystoreJson: string;
   pendingMnemonic: string;
@@ -403,8 +408,11 @@ const state: AppState = {
   pendingRotationTxHash: '',
   approvalRequest: null,
   accounts: [],
+  activeAccountId: '',
+  activeMultichainAccount: null,
   selectedTxHash: '',
   switchTargetAddress: '',
+  switchTargetAccountId: '',
 };
 
 function escapeHtml(value: unknown): string {
@@ -563,7 +571,11 @@ function tokenMessageType(action: 'add' | 'balance' | 'send' | 'remove' | 'info'
 }
 
 function currentNetworkTokens(): WatchedToken[] {
-  return state.watchedTokens.filter((token) => token.chainKind === state.network.kind && token.chainId === state.network.chainId);
+  return state.watchedTokens.filter((token) => token.chainKind === state.network.kind && token.chainId === state.network.chainId && token.hidden !== true);
+}
+
+function currentHiddenNetworkTokens(): WatchedToken[] {
+  return state.watchedTokens.filter((token) => token.chainKind === state.network.kind && token.chainId === state.network.chainId && token.hidden === true);
 }
 
 function renderAccountModelMeta(): string {
@@ -1331,6 +1343,7 @@ function renderTokenAssets(): string {
   const metadata = currentChainUiMetadata();
   if (!metadata.capabilities.tokenTransfers) return '';
   const tokens = currentNetworkTokens();
+  const hiddenTokens = currentHiddenNetworkTokens();
   const tokenStandard = metadata.tokenStandard ?? 'Tokens';
   const rows = tokens.length > 0
     ? tokens.map((token) => {
@@ -1346,11 +1359,31 @@ function renderTokenAssets(): string {
               <span>${escapeHtml(balance?.symbol ?? token.symbol)}</span>
             </div>
             <button class="btn-secondary btn-token-send" data-contract="${escapeHtml(token.contractAddress)}">Send</button>
+            <button class="btn-secondary btn-token-hide" data-contract="${escapeHtml(token.contractAddress)}">Hide</button>
             <button class="btn-icon btn-token-remove" data-contract="${escapeHtml(token.contractAddress)}" title="Remove token">×</button>
           </div>
         `;
       }).join('')
     : `<div class="empty-panel compact-empty">No ${escapeHtml(tokenStandard)} tokens added</div>`;
+  const hiddenRows = hiddenTokens.length > 0
+    ? `
+      <details class="disclosure hidden-token-list">
+        <summary>Hidden ${escapeHtml(tokenStandard)} (${hiddenTokens.length})</summary>
+        <div class="disclosure-body">
+          ${hiddenTokens.map((token) => `
+            <div class="token-item">
+              <div class="token-main">
+                <span class="token-symbol">${escapeHtml(token.symbol)}</span>
+                <span class="monospace token-contract">${escapeHtml(truncate(token.contractAddress, 8, 6))}</span>
+              </div>
+              <button class="btn-secondary btn-token-show" data-contract="${escapeHtml(token.contractAddress)}">Show</button>
+              <button class="btn-icon btn-token-remove" data-contract="${escapeHtml(token.contractAddress)}" title="Remove token">×</button>
+            </div>
+          `).join('')}
+        </div>
+      </details>
+    `
+    : '';
   return `
     <div class="token-card">
       <div class="section-header">
@@ -1358,6 +1391,7 @@ function renderTokenAssets(): string {
         <button class="btn-secondary btn-compact" id="btn-add-token">Add Token</button>
       </div>
       ${rows}
+      ${hiddenRows}
     </div>
   `;
 }
@@ -1913,19 +1947,70 @@ function formatCpfpParents(txHashes: string[]): string {
   return txHashes.length > 2 ? `${visible}, +${txHashes.length - 2}` : visible;
 }
 
-function renderAccounts(): string {
+function popupAccountId(account: StoredAccount): string {
+  if (account.accountId) return account.accountId;
+  if (typeof account.derivationIndex === 'number') return `hd:${account.derivationIndex}`;
+  return `imported:${account.pqAddress}`;
+}
+
+function currentAddressKey(): MultichainAddress['addressKey'] {
+  if (state.network.kind === 'bitcoin' && state.network.chainId !== 8332) return 'bitcoinTestnet';
+  return state.network.kind ?? 'shell';
+}
+
+function accountChainAddress(account: StoredAccount, addressKey = currentAddressKey()): MultichainAddress | null {
+  const fromAddresses = account.addresses?.find((entry) => entry.addressKey === addressKey || entry.chainKind === state.network.kind);
+  if (fromAddresses) return fromAddresses;
+  const legacy = account.chainAddresses?.[addressKey];
+  if (legacy) {
+    return {
+      addressKey,
+      chainKind: state.network.kind ?? 'shell',
+      address: legacy,
+      signatureScheme: addressKey === 'shell' || addressKey === 'evm' ? 'ml-dsa-65' : 'secp256k1',
+      isShellAuthority: addressKey === 'shell' && legacy === account.pqAddress,
+    };
+  }
+  return {
+    addressKey: 'shell',
+    chainKind: 'shell',
+    address: account.primaryAddress ?? account.pqAddress,
+    signatureScheme: 'ml-dsa-65',
+    isShellAuthority: true,
+  };
+}
+
+function renderAccountAddressRows(account: StoredAccount): string {
+  const rows = (account.addresses ?? []).slice(0, 4).map((entry) => `
+    <span>${escapeHtml(entry.addressKey)}: ${escapeHtml(truncate(entry.address, 8, 6))}${entry.isShellAuthority ? ' · PQ authority' : ''}</span>
+  `);
+  if (rows.length === 0) {
+    rows.push(`<span>shell: ${escapeHtml(truncate(account.pqAddress, 8, 6))} · PQ authority</span>`);
+  }
+  return rows.join('');
+}
+
+export function renderAccounts(): string {
   const accountsHtml = state.accounts.map((acct, i) => {
-    const isActive = acct.pqAddress === state.pqAddress;
+    const accountId = popupAccountId(acct);
+    const currentAddress = accountChainAddress(acct);
+    const isActive = accountId === state.activeAccountId || acct.pqAddress === state.pqAddress;
+    const label = acct.displayName ?? `Account ${i + 1}`;
     return `
       <div class="account-item${isActive ? ' account-item-active' : ''}">
         <div class="account-item-info">
-          <span class="account-label">Account ${i + 1}</span>
-          <span class="monospace account-address">${escapeHtml(truncate(acct.pqAddress))}</span>
+          <span class="account-label">${escapeHtml(label)}</span>
+          <span class="site-meta">
+            <span>${escapeHtml(accountId)}</span>
+            <span>Current ${escapeHtml(currentAddress?.addressKey ?? 'shell')}: ${escapeHtml(truncate(currentAddress?.address ?? acct.pqAddress, 8, 6))}</span>
+          </span>
+          <span class="monospace account-address">Shell/PQ root ${escapeHtml(truncate(acct.primaryAddress ?? acct.pqAddress))}</span>
+          <span class="site-meta">${renderAccountAddressRows(acct)}</span>
           ${isActive ? '<span class="badge badge-active">Active</span>' : ''}
         </div>
         <div class="account-item-actions">
           ${!isActive
-            ? `<button class="btn-secondary btn-switch-account" data-address="${escapeHtml(acct.pqAddress)}">Switch</button>`
+            ? `<button class="btn-secondary btn-switch-account" data-account-id="${escapeHtml(accountId)}" data-address="${escapeHtml(acct.pqAddress)}">Switch</button>`
             : ''}
           <button class="btn-secondary btn-copy-account" data-address="${escapeHtml(acct.pqAddress)}">Copy</button>
         </div>
@@ -1972,6 +2057,7 @@ function renderSwitchAccount(): string {
       <h2>Switch Account</h2>
       <p class="hint">Enter the password for this account:</p>
       <div class="address-box" style="margin-bottom:12px">
+        ${state.switchTargetAccountId ? `<span>${escapeHtml(state.switchTargetAccountId)}</span>` : ''}
         <span class="monospace">${escapeHtml(truncate(state.switchTargetAddress))}</span>
       </div>
       <label>Password
@@ -1990,6 +2076,7 @@ function renderConnectedDappsCenter(): string {
         <div class="site-origin">${escapeHtml(site.origin)}</div>
         <div class="site-meta">
           <span>EVM/Shell</span>
+          <span>${escapeHtml(site.accountIds?.length ? site.accountIds.join(', ') : 'Legacy address permission')}</span>
           <span>${escapeHtml(site.accounts.length > 0 ? site.accounts.map((account) => truncate(account, 8, 6)).join(', ') : 'No accounts')}</span>
           <span>Chain ${site.chainId}</span>
           <span>Granted ${escapeHtml(formatTimestamp(site.grantedAt))}</span>
@@ -3127,6 +3214,7 @@ function attachHandlers(): void {
     btn.addEventListener('click', () => {
       state.error = '';
       state.switchTargetAddress = (btn as HTMLElement).dataset.address ?? '';
+      state.switchTargetAccountId = (btn as HTMLElement).dataset.accountId ?? '';
       state.view = 'switch-account';
       render();
     });
@@ -3145,7 +3233,11 @@ function attachHandlers(): void {
     if (!pwd) return;
     state.error = '';
     try {
-      await send('SWITCH_ACCOUNT', { password: pwd, address: state.switchTargetAddress });
+      await send('SWITCH_ACCOUNT', {
+        password: pwd,
+        accountId: state.switchTargetAccountId || undefined,
+        address: state.switchTargetAddress,
+      });
       await refreshWalletData();
       state.view = 'wallet';
       render();
@@ -3322,6 +3414,25 @@ function attachHandlers(): void {
         await send(tokenMessageType('remove'), { contractAddress });
         await refreshWalletData();
         showToast('Token removed');
+        render();
+      } catch (err) {
+        showToast((err as Error).message, true);
+      }
+    });
+  });
+
+  document.querySelectorAll('.btn-token-hide, .btn-token-show').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const contractAddress = (btn as HTMLElement).dataset.contract ?? '';
+      const hide = (btn as HTMLElement).classList.contains('btn-token-hide');
+      try {
+        await send(hide ? 'HIDE_WATCHED_TOKEN' : 'SHOW_WATCHED_TOKEN', {
+          chainKind: state.network.kind ?? 'shell',
+          chainId: state.network.chainId,
+          contractAddress,
+        });
+        await refreshWalletData();
+        showToast(hide ? 'Token hidden' : 'Token shown');
         render();
       } catch (err) {
         showToast((err as Error).message, true);
@@ -4196,6 +4307,8 @@ async function refreshWalletData(): Promise<void> {
   state.nonce = snapshot.nonce;
   state.nodeInfo = snapshot.nodeInfo ?? null;
   state.accounts = snapshot.wallet.accounts ?? [];
+  state.activeAccountId = snapshot.activeAccountId ?? '';
+  state.activeMultichainAccount = snapshot.activeMultichainAccount ?? null;
   if (snapshot.activeAddress) {
     state.pqAddress = snapshot.activeAddress;
   } else if (snapshot.primaryAccount) {
@@ -4521,6 +4634,8 @@ async function boot(): Promise<void> {
   state.nonce = snapshot.nonce;
   state.nodeInfo = snapshot.nodeInfo ?? null;
   state.accounts = snapshot.wallet.accounts ?? [];
+  state.activeAccountId = snapshot.activeAccountId ?? '';
+  state.activeMultichainAccount = snapshot.activeMultichainAccount ?? null;
   state.cosmosBalances = snapshot.cosmosBalances ?? [];
   state.cosmosStaking = snapshot.cosmosStaking ?? [];
   state.cosmosRedelegations = snapshot.cosmosRedelegations ?? [];

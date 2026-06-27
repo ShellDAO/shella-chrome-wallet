@@ -1,5 +1,17 @@
 export type ChainKind = 'shell' | 'evm' | 'tron' | 'solana' | 'bitcoin' | 'cosmos' | 'ton' | 'aptos';
 export type ChainAddressKey = ChainKind | 'bitcoinTestnet';
+export type AccountSourceKind = 'hd' | 'imported-keystore' | 'imported-private-key' | 'hardware-future';
+export type SignatureScheme = 'ml-dsa-65' | 'ed25519' | 'secp256k1' | 'bitcoin-schnorr-or-ecdsa' | 'tron-secp256k1';
+
+export interface MultichainAddress {
+  addressKey: ChainAddressKey;
+  chainKind: ChainKind;
+  address: string;
+  derivationPath?: string | null;
+  publicKey?: string | null;
+  signatureScheme: SignatureScheme;
+  isShellAuthority: boolean;
+}
 
 export interface ChainCapabilities {
   readBalance: boolean;
@@ -154,6 +166,11 @@ export interface Network {
 }
 
 export interface StoredAccount {
+  accountId?: string;
+  displayName?: string;
+  sourceKind?: AccountSourceKind;
+  primaryAddress?: string;
+  addresses?: MultichainAddress[];
   pqAddress: string;
   keystoreJson: string;
   chainAddresses?: Partial<Record<ChainAddressKey, string>>;
@@ -170,6 +187,7 @@ export interface PendingKeyRotation {
 export interface ConnectedSitePermission {
   origin: string;
   accounts: string[];
+  accountIds?: string[];
   chainId: number;
   grantedAt: number;
   lastUsedAt: number;
@@ -254,6 +272,7 @@ export interface WatchedToken {
   symbol: string;
   decimals: number;
   addedAt: number;
+  hidden?: boolean;
 }
 
 export interface PortfolioAsset {
@@ -366,6 +385,7 @@ export interface WalletTxRecord {
 }
 
 export interface WalletState {
+  accountModelVersion?: 2;
   accounts: StoredAccount[];
   network: Network;
   autoLockMinutes: number;
@@ -388,6 +408,8 @@ export interface WalletSnapshot {
   locked: boolean;
   wallet: WalletState;
   primaryAccount: StoredAccount | null;
+  activeAccountId?: string | null;
+  activeMultichainAccount?: StoredAccount | null;
   activeAddress: string | null;
   activeChainKind: ChainKind;
   balance: {

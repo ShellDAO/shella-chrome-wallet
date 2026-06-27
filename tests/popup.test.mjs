@@ -186,8 +186,30 @@ describe('popup', async () => {
       balanceFormatted: '1.250000',
       detectedChainId: null,
       network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
-      accounts: [{ pqAddress: '0x' + 'a'.repeat(64) }],
-      watchedTokens: [],
+      activeAccountId: 'hd:0',
+      accounts: [{
+        accountId: 'hd:0',
+        displayName: 'Account 1',
+        primaryAddress: '0x' + 'a'.repeat(64),
+        pqAddress: '0x' + 'a'.repeat(64),
+        keystoreJson: '{}',
+        addresses: [{
+          addressKey: 'shell',
+          chainKind: 'shell',
+          address: '0x' + 'a'.repeat(64),
+          signatureScheme: 'ml-dsa-65',
+          isShellAuthority: true,
+        }],
+      }],
+      watchedTokens: [{
+        chainKind: 'shell',
+        chainId: 424242,
+        contractAddress: '0x' + 'b'.repeat(20),
+        symbol: 'HIDE',
+        decimals: 18,
+        addedAt: 1,
+        hidden: true,
+      }],
       tokenBalances: {},
       portfolioAssets: [
         {
@@ -218,7 +240,47 @@ describe('popup', async () => {
     assert.ok(html.includes('Assets'));
     assert.ok(html.includes('portfolio-assets'));
     assert.ok(html.includes('No ERC20 tokens added'));
+    assert.ok(html.includes('Hidden ERC20 (1)'));
+    assert.ok(html.includes('btn-token-show'));
     assert.ok(html.includes('Copy'));
+  });
+
+  test('accounts view renders multichain account identity without replacing Shell PQ root', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderAccounts } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderAccounts !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: '0x' + 'a'.repeat(64),
+      activeAccountId: 'hd:0',
+      network: { name: 'Tron Nile', chainId: 3448148188, rpcUrl: 'https://nile.trongrid.io', kind: 'tron', symbol: 'TRX', rpcProvenance: 'official-public' },
+      accounts: [{
+        accountId: 'hd:0',
+        displayName: 'Trading',
+        primaryAddress: '0x' + 'a'.repeat(64),
+        pqAddress: '0x' + 'a'.repeat(64),
+        keystoreJson: '{}',
+        addresses: [
+          { addressKey: 'shell', chainKind: 'shell', address: '0x' + 'a'.repeat(64), signatureScheme: 'ml-dsa-65', isShellAuthority: true },
+          { addressKey: 'tron', chainKind: 'tron', address: 'TWallet111111111111111111111111111111', signatureScheme: 'tron-secp256k1', isShellAuthority: false },
+        ],
+      }, {
+        accountId: 'hd:1',
+        displayName: 'Vault',
+        primaryAddress: '0x' + 'c'.repeat(64),
+        pqAddress: '0x' + 'c'.repeat(64),
+        keystoreJson: '{}',
+        addresses: [{ addressKey: 'shell', chainKind: 'shell', address: '0x' + 'c'.repeat(64), signatureScheme: 'ml-dsa-65', isShellAuthority: true }],
+      }],
+    });
+
+    const html = renderAccounts();
+    assert.ok(html.includes('Trading'));
+    assert.ok(html.includes('hd:0'));
+    assert.ok(html.includes('Shell/PQ root'));
+    assert.ok(html.includes('PQ authority'));
+    assert.ok(html.includes('Current tron'));
+    assert.ok(html.includes('data-account-id="hd:1"'));
   });
 
   test('send view separates Basic, Fees & Advanced, and Chain Preview sections', async () => {

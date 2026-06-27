@@ -122,7 +122,9 @@ import {
   getAutoLockMinutes,
   getBitcoinUtxoPreferences,
   getConnectedSites,
+  getAccountId,
   getHdStore,
+  getLastActiveAccountId,
   getLastActiveAddress,
   getPendingKeyRotations,
   getNetwork,
@@ -141,11 +143,13 @@ import {
   replaceAccountKeystore,
   setAutoLockMinutes,
   setHdStore,
+  setLastActiveAccountId,
   setLastActiveAddress,
   setNetwork,
   setPendingKeyRotations,
   setSessionState,
   setWalletConnectConfig,
+  setWatchedTokenHidden,
   setTxQueue,
   upsertBitcoinUtxoPreference,
   upsertBitcoinUtxoPreferences,
@@ -725,11 +729,17 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'IMPORT_KEYSTORE':
       return importKeystore(requireString(msg.keystoreJson, 'keystoreJson'), requirePassword(msg.password));
     case 'UNLOCK_WALLET':
-      return unlockWallet(requirePassword(msg.password), typeof msg.address === 'string' ? msg.address : undefined);
+      return unlockWallet(requirePassword(msg.password), {
+        address: typeof msg.address === 'string' ? msg.address : undefined,
+        accountId: typeof msg.accountId === 'string' ? msg.accountId : undefined,
+      });
     case 'ADD_ACCOUNT':
       return createAdditionalAccount(requirePassword(msg.password));
     case 'SWITCH_ACCOUNT':
-      return unlockWallet(requirePassword(msg.password), requireString(msg.address, 'address'));
+      return unlockWallet(requirePassword(msg.password), {
+        address: optionalString(msg.address),
+        accountId: optionalString(msg.accountId),
+      });
     case 'LOCK_WALLET':
       await lockWallet();
       return { ok: true };
@@ -934,6 +944,11 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         bitcoinInputs: normalizeBitcoinInputs(msg.bitcoinInputs),
         cosmosMemo: optionalString(msg.cosmosMemo),
       });
+    case 'REVOKE_ERC20_APPROVAL':
+      return revokeErc20Approval({
+        tokenContract: requireString(msg.tokenContract, 'tokenContract'),
+        spender: requireString(msg.spender, 'spender'),
+      });
     case 'GET_TX_HISTORY':
       return getTxHistory(requireString(msg.address, 'address'), optionalNumber(msg.page) ?? 0);
     case 'GET_NETWORK':
@@ -967,6 +982,22 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return { ok: true };
     case 'REMOVE_CONNECTED_SITE':
       await removeConnectedSite(normalizeOrigin(requireString(msg.origin, 'origin')));
+      return { ok: true };
+    case 'HIDE_WATCHED_TOKEN':
+      await setWatchedTokenHidden(
+        requireChainKind(msg.chainKind, 'chainKind'),
+        requireNumber(msg.chainId, 'chainId'),
+        requireString(msg.contractAddress, 'contractAddress'),
+        true,
+      );
+      return { ok: true };
+    case 'SHOW_WATCHED_TOKEN':
+      await setWatchedTokenHidden(
+        requireChainKind(msg.chainKind, 'chainKind'),
+        requireNumber(msg.chainId, 'chainId'),
+        requireString(msg.contractAddress, 'contractAddress'),
+        false,
+      );
       return { ok: true };
     case 'DISCONNECT_ALL_SITES':
       await Promise.all([
@@ -1016,6 +1047,7 @@ async function createWallet(password: string): Promise<{ pqAddress: string }> {
     unlockedAt: Date.now(),
   });
   await setLastActiveAddress(pqAddress);
+  await setLastActiveAccountId(getAccountId(account));
   await scheduleAutoLock();
   sk.fill(0); // zero ephemeral local copy; adapter holds its own copy
 
@@ -1046,6 +1078,7 @@ async function importKeystore(
   replaceCurrentTonKey(null);
   await setSessionState({ unlockedPqAddress: pqAddress, unlockedAt: Date.now() });
   await setLastActiveAddress(pqAddress);
+  await setLastActiveAccountId(getAccountId(account));
   await scheduleAutoLock();
   secretKey.fill(0); // zero ephemeral local copy; adapter holds its own copy
 
@@ -1149,6 +1182,12 @@ async function createHdWallet(mnemonic: string, password: string): Promise<{ pqA
   }
   await setSessionState({ unlockedPqAddress: account.address, unlockedAt: Date.now() });
   await setLastActiveAddress(account.address);
+  await setLastActiveAccountId(getAccountId({
+    pqAddress: account.address,
+    keystoreJson: JSON.stringify(keystore),
+    chainAddresses,
+    derivationIndex: 0,
+  }));
   await scheduleAutoLock();
 
   return { pqAddress: account.address };
@@ -1255,6 +1294,12 @@ async function getActiveAccount(): Promise<StoredAccount | null> {
     if (match) return match;
   }
 
+  const lastAccountId = await getLastActiveAccountId();
+  if (lastAccountId) {
+    const match = accounts.find(a => getAccountId(a) === lastAccountId);
+    if (match) return match;
+  }
+
   // Fall back to last persisted active address (survives lock).
   const lastAddr = await getLastActiveAddress();
   if (lastAddr) {
@@ -1265,12 +1310,17 @@ async function getActiveAccount(): Promise<StoredAccount | null> {
   return accounts[0];
 }
 
-async function unlockWallet(password: string, address?: string): Promise<{ ok: boolean; pqAddress?: string }> {
+async function unlockWallet(
+  password: string,
+  selector: { address?: string; accountId?: string } = {},
+): Promise<{ ok: boolean; pqAddress?: string; accountId?: string }> {
   const accounts = await getAccounts();
   if (accounts.length === 0) throw new Error('No wallet found');
 
-  const account = address != null
-    ? accounts.find(a => a.pqAddress === address)
+  const account = selector.accountId != null
+    ? accounts.find(a => getAccountId(a) === selector.accountId)
+    : selector.address != null
+    ? accounts.find(a => a.pqAddress === selector.address)
     : accounts[0];
   if (!account) throw new Error('Account not found');
 
@@ -1284,10 +1334,11 @@ async function unlockWallet(password: string, address?: string): Promise<{ ok: b
 
   await setSessionState({ unlockedPqAddress: account.pqAddress, unlockedAt: Date.now() });
   await setLastActiveAddress(account.pqAddress);
+  await setLastActiveAccountId(getAccountId(account));
   await scheduleAutoLock();
   secretKey.fill(0); // zero ephemeral local copy; adapter holds its own copy
 
-  return { ok: true, pqAddress: account.pqAddress };
+  return { ok: true, pqAddress: account.pqAddress, accountId: getAccountId(account) };
 }
 
 function deriveNativeChainAddresses(seed: Uint8Array, accountIndex: number, shellAddress: string): Partial<Record<ChainAddressKey, string>> {
@@ -1342,6 +1393,8 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       locked,
       wallet,
       primaryAccount: null,
+      activeAccountId: null,
+      activeMultichainAccount: null,
       activeAddress: null,
       activeChainKind: getChainKind(wallet.network),
       balance: null,
@@ -1362,6 +1415,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
           locked,
           wallet,
           primaryAccount,
+          ...getSnapshotAccountMeta(queryAccount),
           activeAddress: null,
           activeChainKind,
           balance: null,
@@ -1385,6 +1439,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
         locked,
         wallet,
         primaryAccount,
+        ...getSnapshotAccountMeta(queryAccount),
         activeAddress: queryAddress,
         activeChainKind,
         balance: { raw: balance.balance, formatted: balance.formatted },
@@ -1418,6 +1473,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       locked,
       wallet,
       primaryAccount,
+      ...getSnapshotAccountMeta(queryAccount),
       activeAddress: queryAddress,
       activeChainKind,
       balance: {
@@ -1442,6 +1498,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       locked,
       wallet,
       primaryAccount,
+      ...getSnapshotAccountMeta(queryAccount),
       activeAddress,
       activeChainKind,
       balance: null,
@@ -1453,6 +1510,13 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
         : [],
     };
   }
+}
+
+function getSnapshotAccountMeta(account: StoredAccount): Pick<WalletSnapshot, 'activeAccountId' | 'activeMultichainAccount'> {
+  return {
+    activeAccountId: getAccountId(account),
+    activeMultichainAccount: account,
+  };
 }
 
 async function buildPortfolioAssets(input: {
@@ -1509,7 +1573,7 @@ async function buildPortfolioAssets(input: {
 
   const tokenAssets = await Promise.all(
     input.wallet.watchedTokens
-      .filter((token) => token.chainKind === chainKind && token.chainId === input.network.chainId)
+      .filter((token) => token.chainKind === chainKind && token.chainId === input.network.chainId && token.hidden !== true)
       .map((token) => buildWatchedTokenPortfolioAsset(token, input.network, address)),
   );
   assets.push(...tokenAssets);
@@ -2474,6 +2538,21 @@ async function sendErc20TokenTransfer(input: {
   return { txHash };
 }
 
+async function revokeErc20Approval(input: { tokenContract: string; spender: string }): Promise<{ txHash: string }> {
+  const network = await getNetwork();
+  const chainKind = getChainKind(network);
+  if (chainKind !== 'shell' && chainKind !== 'evm') throw new Error('ERC20 revoke is only available on Shell/EVM networks');
+  const tokenContract = normalizeRecipient(input.tokenContract);
+  const spender = normalizeRecipient(input.spender);
+  const data = `0x095ea7b3${encodeShellAbiAddress(spender)}${'0'.repeat(64)}`;
+  return sendTransaction({
+    to: tokenContract,
+    value: '0',
+    data,
+    expectedChainId: network.chainId,
+  });
+}
+
 async function getSplInfo(contractAddress: string) {
   const network = await getNetwork();
   if (getChainKind(network) !== 'solana') throw new Error('SPL is only available on Solana networks');
@@ -3242,8 +3321,9 @@ async function handleAptosDappRequest(
   if (!account) throw new Error('No Aptos address is available for this account');
 
   if (message.method === 'aptos_connect') {
-    if (permission?.accounts.includes(account)) {
-      await addConnectedSite(buildConnectedSite(origin, account, network.chainId, permission.grantedAt));
+    if (getConnectedActiveAccountAddress(permission, activeAccount, 'aptos') === account) {
+      if (!permission) throw new Error(`Site not connected: ${origin}`);
+      await addConnectedSite(buildConnectedSite(origin, account, network.chainId, permission.grantedAt, getAccountId(activeAccount)));
       return formatAptosDappAccount(account);
     }
     const approved = await requestUserApproval({
@@ -3258,7 +3338,7 @@ async function handleAptosDappRequest(
       },
     });
     if (!approved) throw new Error('Request rejected by user');
-    const granted = buildConnectedSite(origin, account, network.chainId, permission?.grantedAt);
+    const granted = buildConnectedSite(origin, account, network.chainId, permission?.grantedAt, getAccountId(activeAccount));
     await addConnectedSite(granted);
     return formatAptosDappAccount(account);
   }
@@ -3507,7 +3587,7 @@ async function createWalletConnectSession(input: {
     expiresAt: now + expirySeconds * 1000,
   };
   await upsertWalletConnectSession(session);
-  await addConnectedSite(buildConnectedSite(session.origin, accounts[0], network.chainId, now));
+  await addConnectedSite(buildConnectedSite(session.origin, accounts[0], network.chainId, now, getAccountId(activeAccount)));
   return session;
 }
 
@@ -4539,11 +4619,21 @@ function buildApprovalRiskSummary(
     rows.push({ label: 'Recipient', value: to ?? 'Contract creation' });
     rows.push({ label: 'Value', value });
     rows.push({ label: 'Calldata', value: `${Math.max(0, (data.length - 2) / 2)} bytes` });
+    const approval = decodeErc20ApprovalCalldata(data);
+    if (approval) {
+      rows.push({ label: 'Approval spender', value: approval.spender });
+      rows.push({ label: 'Approval amount', value: approval.unlimited ? 'Unlimited' : approval.amount });
+      flags.push(approval.unlimited ? 'unlimited-token-approval' : 'token-approval');
+    }
     if (!to) flags.push('contract-creation');
     if (data !== '0x') flags.push('calldata-present');
     return {
-      riskLevel: !to ? 'high' : data !== '0x' ? 'medium' : 'low',
-      riskSummary: data !== '0x' ? 'This transaction includes contract calldata.' : 'This is a native asset transfer.',
+      riskLevel: approval?.unlimited || !to ? 'high' : data !== '0x' ? 'medium' : 'low',
+      riskSummary: approval
+        ? approval.unlimited
+          ? 'This transaction grants unlimited token approval to a spender.'
+          : 'This transaction changes token allowance for a spender.'
+        : data !== '0x' ? 'This transaction includes contract calldata.' : 'This is a native asset transfer.',
       riskFlags: flags,
       displayRows: rows,
     };
@@ -4575,6 +4665,17 @@ function buildApprovalRiskSummary(
     riskFlags: flags,
     displayRows: rows,
   };
+}
+
+function decodeErc20ApprovalCalldata(data: `0x${string}`): { spender: string; amount: string; unlimited: boolean } | null {
+  const hex = data.slice(2).toLowerCase();
+  if (!hex.startsWith('095ea7b3') || hex.length < 8 + 64 + 64) return null;
+  const spenderWord = hex.slice(8, 72);
+  const amountWord = hex.slice(72, 136);
+  const spender = `0x${spenderWord.slice(24)}`;
+  const amount = BigInt(`0x${amountWord}`);
+  const unlimited = amount === (1n << 256n) - 1n;
+  return { spender, amount: amount.toString(), unlimited };
 }
 
 function normalizePersonalSignRequest(params: unknown[] | undefined, activeAccount: string): { message: string } {
@@ -4671,7 +4772,7 @@ async function handleShellDappRequest(
       if (!currentSigner) throw new Error('Wallet is locked');
       const activeConnectedAccount = getConnectedActiveAccountAddress(permission, activeAccount, getChainKind(network));
       if (permission && activeConnectedAccount) {
-        await addConnectedSite(buildConnectedSite(origin, activeConnectedAccount, network.chainId, permission.grantedAt));
+        await addConnectedSite(buildConnectedSite(origin, activeConnectedAccount, network.chainId, permission.grantedAt, getAccountId(activeAccount)));
         return [activeConnectedAccount];
       }
       const approved = await requestUserApproval({
@@ -4691,7 +4792,7 @@ async function handleShellDappRequest(
         },
       });
       if (!approved) throw new Error('Request rejected by user');
-      const granted = buildConnectedSite(origin, activeAccount.pqAddress, network.chainId, permission?.grantedAt);
+      const granted = buildConnectedSite(origin, activeAccount.pqAddress, network.chainId, permission?.grantedAt, getAccountId(activeAccount));
       await addConnectedSite(granted);
       return granted.accounts;
     }
@@ -4882,9 +4983,10 @@ async function handleShellDappRequest(
       });
       if (!approved) throw new Error('Request rejected by user');
       await setNetwork(nextNetwork);
+      if (!activeAccount) throw new Error('No wallet found');
       const nextAccount = getAccountAddressForChain(activeAccount, getChainKind(nextNetwork));
       if (!nextAccount) throw new Error('Connected account is not available on the requested chain');
-      await addConnectedSite(buildConnectedSite(origin, nextAccount, nextNetwork.chainId, permission!.grantedAt));
+      await addConnectedSite(buildConnectedSite(origin, nextAccount, nextNetwork.chainId, permission!.grantedAt, getAccountId(activeAccount)));
       return null;
     }
     case 'wallet_addEthereumChain': {
@@ -4924,7 +5026,7 @@ async function handleShellDappRequest(
       if (!approved) throw new Error('Request rejected by user');
       await setNetwork(nextNetwork);
       if (activeAccount) {
-        await addConnectedSite(buildConnectedSite(origin, activeAccount.pqAddress, nextNetwork.chainId, permission?.grantedAt));
+        await addConnectedSite(buildConnectedSite(origin, activeAccount.pqAddress, nextNetwork.chainId, permission?.grantedAt, getAccountId(activeAccount)));
       }
       return null;
     }
@@ -4996,8 +5098,9 @@ async function handleNativeDappRequest(
     if (!currentSigner) throw new Error('Wallet is locked');
     const account = adapter.getAccount(activeAccount);
     if (!account) throw new Error(`No ${adapter.displayName} address is available for this account`);
-    if (permission?.accounts.includes(account)) {
-      await addConnectedSite(buildConnectedSite(origin, account, network.chainId, permission.grantedAt));
+    if (getConnectedActiveAccountAddress(permission, activeAccount, adapter.chainKind) === account) {
+      if (!permission) throw new Error(`Site not connected: ${origin}`);
+      await addConnectedSite(buildConnectedSite(origin, account, network.chainId, permission.grantedAt, getAccountId(activeAccount)));
       return adapter.formatConnectResponse([account]);
     }
     const approved = await requestUserApproval({
@@ -5012,7 +5115,7 @@ async function handleNativeDappRequest(
       },
     });
     if (!approved) throw new Error('Request rejected by user');
-    const granted = buildConnectedSite(origin, account, network.chainId, permission?.grantedAt);
+    const granted = buildConnectedSite(origin, account, network.chainId, permission?.grantedAt, getAccountId(activeAccount));
     await addConnectedSite(granted);
     return adapter.formatConnectResponse(granted.accounts);
   }
@@ -5082,11 +5185,13 @@ function buildConnectedSite(
   pqAddress: string,
   chainId: number,
   grantedAt: number = Date.now(),
+  accountId?: string,
 ): ConnectedSitePermission {
   const now = Date.now();
   return {
     origin,
     accounts: [pqAddress],
+    accountIds: accountId ? [accountId] : [],
     chainId,
     grantedAt,
     lastUsedAt: now,
@@ -5167,7 +5272,10 @@ function getConnectedActiveAccountAddress(
 ): string | null {
   if (!permission) return null;
   const activeAddress = getAccountAddressForChain(activeAccount, chainKind);
-  return activeAddress && permission.accounts.includes(activeAddress) ? activeAddress : null;
+  if (!activeAddress || !activeAccount) return null;
+  const activeAccountId = getAccountId(activeAccount);
+  if (permission.accountIds?.includes(activeAccountId)) return activeAddress;
+  return permission.accounts.includes(activeAddress) ? activeAddress : null;
 }
 
 function requireConnectedActiveAccount(
@@ -6199,6 +6307,11 @@ function validateNetwork(value: unknown): Network {
 function optionalChainKind(value: unknown): ChainKind {
   if (value === 'shell' || value === 'evm' || value === 'tron' || value === 'solana' || value === 'bitcoin' || value === 'cosmos' || value === 'ton' || value === 'aptos') return value;
   return 'shell';
+}
+
+function requireChainKind(value: unknown, field: string): ChainKind {
+  if (value === 'shell' || value === 'evm' || value === 'tron' || value === 'solana' || value === 'bitcoin' || value === 'cosmos' || value === 'ton' || value === 'aptos') return value;
+  throw new Error(`${field} is invalid`);
 }
 
 // WALLET-H2: Validate that an RPC URL uses an approved scheme and is not a
