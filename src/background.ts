@@ -114,7 +114,10 @@ import {
   addConnectedSite,
   addWatchedToken,
   clearAllData,
+  clearConnectedSites,
   clearSessionState,
+  clearTonConnectSessions,
+  clearWalletConnectSessions,
   getAccounts,
   getAutoLockMinutes,
   getBitcoinUtxoPreferences,
@@ -174,11 +177,13 @@ import type {
   BitcoinTransferPreview,
   BitcoinTxInput,
   BitcoinUtxoPreference,
+  ApprovalRiskSummary,
   CosmosDenomBalance,
   CosmosGovernanceProposal,
   CosmosRedelegationEntry,
   CosmosStakingPosition,
   CosmosValidatorSummary,
+  PortfolioAsset,
 } from './types.js';
 
 const AUTO_LOCK_ALARM = 'shella-auto-lock';
@@ -963,6 +968,13 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'REMOVE_CONNECTED_SITE':
       await removeConnectedSite(normalizeOrigin(requireString(msg.origin, 'origin')));
       return { ok: true };
+    case 'DISCONNECT_ALL_SITES':
+      await Promise.all([
+        clearConnectedSites(),
+        clearWalletConnectSessions(),
+        clearTonConnectSessions(),
+      ]);
+      return { ok: true };
     case 'GET_NODE_INFO':
       return getNodeInfoFromNode((await getNetwork()).rpcUrl);
     case 'DAPP_REQUEST':
@@ -1356,6 +1368,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
           nonce: null,
           detectedChainId: wallet.network.chainId,
           nodeInfo: null,
+          portfolioAssets: [],
         };
       }
       const [balance, nonce, cosmosBalances, cosmosStaking, cosmosRedelegations, cosmosValidators, cosmosGovernanceProposals, cosmosIbcContext] = await Promise.all([
@@ -1384,6 +1397,13 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
         nonce,
         detectedChainId: wallet.network.chainId,
         nodeInfo: null,
+        portfolioAssets: await buildPortfolioAssets({
+          wallet,
+          account: queryAccount,
+          network: wallet.network,
+          activeBalance: { raw: balance.balance, formatted: balance.formatted },
+          cosmosBalances,
+        }),
       };
     }
     const provider = buildProvider(wallet.network);
@@ -1407,20 +1427,200 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce,
       detectedChainId,
       nodeInfo,
+      portfolioAssets: await buildPortfolioAssets({
+        wallet,
+        account: queryAccount,
+        network: wallet.network,
+        activeBalance: { raw: balance.toString(), formatted: formatEther(balance) },
+      }),
     };
   } catch {
+    const activeChainKind = getChainKind(wallet.network);
+    const queryAccount = activeAccount ?? primaryAccount;
+    const activeAddress = getAccountAddressForNetwork(queryAccount, wallet.network);
     return {
       locked,
       wallet,
       primaryAccount,
-      activeAddress: getAccountAddressForNetwork(activeAccount, wallet.network),
-      activeChainKind: getChainKind(wallet.network),
+      activeAddress,
+      activeChainKind,
       balance: null,
       nonce: null,
       detectedChainId: null,
       nodeInfo: null,
+      portfolioAssets: activeAddress
+        ? [buildUnavailableNativePortfolioAsset(wallet.network, activeAddress, 'Balance unavailable')]
+        : [],
     };
   }
+}
+
+async function buildPortfolioAssets(input: {
+  wallet: WalletSnapshot['wallet'];
+  account: StoredAccount;
+  network: Network;
+  activeBalance: { raw: string; formatted: string } | null;
+  cosmosBalances?: CosmosDenomBalance[] | null;
+}): Promise<PortfolioAsset[]> {
+  const chainKind = getChainKind(input.network);
+  const address = getAccountAddressForNetwork(input.account, input.network);
+  if (!address) return [];
+
+  const assets: PortfolioAsset[] = [];
+  if (input.activeBalance) {
+    assets.push({
+      chainKind,
+      chainId: input.network.chainId,
+      networkName: input.network.name,
+      address,
+      assetType: 'native',
+      symbol: input.network.symbol ?? (chainKind === 'shell' || chainKind === 'evm' ? 'SHELL' : chainKind.toUpperCase()),
+      name: input.network.name,
+      contractAddress: null,
+      rawBalance: input.activeBalance.raw,
+      formattedBalance: input.activeBalance.formatted,
+      decimals: getNativeAssetDecimals(input.network),
+      status: 'ok',
+      error: null,
+    });
+  } else {
+    assets.push(buildUnavailableNativePortfolioAsset(input.network, address, 'Balance unavailable'));
+  }
+
+  if (chainKind === 'cosmos' && input.cosmosBalances) {
+    for (const balance of input.cosmosBalances) {
+      assets.push({
+        chainKind,
+        chainId: input.network.chainId,
+        networkName: input.network.name,
+        address,
+        assetType: 'cosmos-denom',
+        symbol: balance.symbol,
+        name: balance.denom,
+        contractAddress: balance.denom,
+        rawBalance: balance.amount,
+        formattedBalance: balance.formatted,
+        decimals: balance.decimals,
+        status: 'ok',
+        error: null,
+      });
+    }
+  }
+
+  const tokenAssets = await Promise.all(
+    input.wallet.watchedTokens
+      .filter((token) => token.chainKind === chainKind && token.chainId === input.network.chainId)
+      .map((token) => buildWatchedTokenPortfolioAsset(token, input.network, address)),
+  );
+  assets.push(...tokenAssets);
+  return assets;
+}
+
+async function buildWatchedTokenPortfolioAsset(
+  token: WalletSnapshot['wallet']['watchedTokens'][number],
+  network: Network,
+  ownerAddress: string,
+): Promise<PortfolioAsset> {
+  try {
+    const balance = await getTokenBalanceForPortfolio(token, ownerAddress);
+    return {
+      chainKind: token.chainKind,
+      chainId: token.chainId,
+      networkName: network.name,
+      address: ownerAddress,
+      assetType: 'token',
+      symbol: balance.symbol ?? token.symbol,
+      name: token.symbol,
+      contractAddress: token.contractAddress,
+      rawBalance: balance.balance,
+      formattedBalance: balance.formatted,
+      decimals: balance.decimals,
+      status: 'ok',
+      error: null,
+    };
+  } catch (error) {
+    return {
+      chainKind: token.chainKind,
+      chainId: token.chainId,
+      networkName: network.name,
+      address: ownerAddress,
+      assetType: 'token',
+      symbol: token.symbol,
+      name: token.symbol,
+      contractAddress: token.contractAddress,
+      rawBalance: null,
+      formattedBalance: null,
+      decimals: token.decimals,
+      status: 'unavailable',
+      error: toSafeErrorMessage(error),
+    };
+  }
+}
+
+async function getTokenBalanceForPortfolio(
+  token: WalletSnapshot['wallet']['watchedTokens'][number],
+  ownerAddress: string,
+): Promise<{ balance: string; formatted: string; decimals: number; symbol: string | null }> {
+  if (token.chainKind === 'shell' || token.chainKind === 'evm') {
+    return getErc20TokenBalance({
+      contractAddress: token.contractAddress,
+      ownerAddress,
+      decimals: token.decimals,
+      symbol: token.symbol,
+    });
+  }
+  if (token.chainKind === 'tron') {
+    return getTrc20TokenBalance({
+      contractAddress: token.contractAddress,
+      ownerAddress,
+      decimals: token.decimals,
+      symbol: token.symbol,
+    });
+  }
+  if (token.chainKind === 'solana') {
+    return getSplTokenBalanceForActiveAccount({
+      contractAddress: token.contractAddress,
+      decimals: token.decimals,
+      symbol: token.symbol,
+    });
+  }
+  if (token.chainKind === 'ton') {
+    return getJettonTokenBalance({
+      contractAddress: token.contractAddress,
+      ownerAddress,
+      decimals: token.decimals,
+      symbol: token.symbol,
+    });
+  }
+  throw new Error(`${token.chainKind} token portfolio assets are not supported`);
+}
+
+function buildUnavailableNativePortfolioAsset(network: Network, address: string, error: string): PortfolioAsset {
+  const chainKind = getChainKind(network);
+  return {
+    chainKind,
+    chainId: network.chainId,
+    networkName: network.name,
+    address,
+    assetType: 'native',
+    symbol: network.symbol ?? (chainKind === 'shell' || chainKind === 'evm' ? 'SHELL' : chainKind.toUpperCase()),
+    name: network.name,
+    contractAddress: null,
+    rawBalance: null,
+    formattedBalance: null,
+    decimals: getNativeAssetDecimals(network),
+    status: 'unavailable',
+    error,
+  };
+}
+
+function getNativeAssetDecimals(network: Network): number {
+  const chainKind = getChainKind(network);
+  if (chainKind === 'bitcoin') return 8;
+  if (chainKind === 'cosmos') return getCosmosNativeDecimals(network);
+  if (chainKind === 'solana' || chainKind === 'ton' || chainKind === 'aptos') return 9;
+  if (chainKind === 'tron') return 6;
+  return 18;
 }
 
 async function getBalance(address: string): Promise<{ balance: string; formatted: string }> {
@@ -4281,10 +4481,16 @@ const SHELL_DAPP_METHODS = new Set([
   'eth_requestAccounts',
   'eth_accounts',
   'eth_chainId',
+  'net_version',
   'eth_blockNumber',
   'eth_getBalance',
   'eth_sendTransaction',
   'eth_call',
+  'personal_sign',
+  'eth_signTypedData_v4',
+  'wallet_getPermissions',
+  'wallet_requestPermissions',
+  'wallet_revokePermissions',
   'wallet_switchEthereumChain',
   'wallet_addEthereumChain',
   'shella_getPqAddress',
@@ -4293,6 +4499,160 @@ const SHELL_DAPP_METHODS = new Set([
 
 function isShellDappMethod(method: string): boolean {
   return SHELL_DAPP_METHODS.has(method);
+}
+
+function buildApprovalRiskSummary(
+  kind: 'connect' | 'add-chain' | 'switch-chain' | 'send-transaction' | 'sign-message' | 'sign-typed-data',
+  input: Record<string, unknown>,
+): ApprovalRiskSummary {
+  const rows: Array<{ label: string; value: string }> = [];
+  const flags: string[] = [];
+  const origin = optionalString(input.origin);
+  const account = optionalString(input.account);
+  const chainId = typeof input.chainId === 'number' ? input.chainId : null;
+  const networkName = optionalString(input.networkName);
+  if (origin) rows.push({ label: 'Origin', value: origin });
+  if (account) rows.push({ label: 'Account', value: account });
+  if (networkName) rows.push({ label: 'Network', value: chainId != null ? `${networkName} (${chainId})` : networkName });
+
+  if (kind === 'connect') {
+    rows.push({ label: 'Permission', value: 'View account address' });
+    return { riskLevel: 'low', riskSummary: 'This site can view your selected account address.', riskFlags: [], displayRows: rows };
+  }
+
+  if (kind === 'add-chain' || kind === 'switch-chain') {
+    const rpcUrl = optionalString(input.rpcUrl);
+    if (rpcUrl) rows.push({ label: 'RPC', value: rpcUrl });
+    if (rpcUrl && !rpcUrl.startsWith('https://') && !isLocalRpcUrl(rpcUrl)) flags.push('non-https-rpc');
+    return {
+      riskLevel: flags.length > 0 ? 'high' : 'medium',
+      riskSummary: kind === 'add-chain' ? 'This site wants to add and switch to a network.' : 'This site wants to switch your active network.',
+      riskFlags: flags,
+      displayRows: rows,
+    };
+  }
+
+  if (kind === 'send-transaction') {
+    const to = optionalString(input.to);
+    const value = optionalString(input.value) ?? '0x0';
+    const data = normalizeData(optionalString(input.data));
+    rows.push({ label: 'Recipient', value: to ?? 'Contract creation' });
+    rows.push({ label: 'Value', value });
+    rows.push({ label: 'Calldata', value: `${Math.max(0, (data.length - 2) / 2)} bytes` });
+    if (!to) flags.push('contract-creation');
+    if (data !== '0x') flags.push('calldata-present');
+    return {
+      riskLevel: !to ? 'high' : data !== '0x' ? 'medium' : 'low',
+      riskSummary: data !== '0x' ? 'This transaction includes contract calldata.' : 'This is a native asset transfer.',
+      riskFlags: flags,
+      displayRows: rows,
+    };
+  }
+
+  if (kind === 'sign-message') {
+    const message = optionalString(input.message) ?? '';
+    rows.push({ label: 'Message', value: previewSignableMessage(message) });
+    flags.push('offchain-signature');
+    return {
+      riskLevel: 'medium',
+      riskSummary: 'This signature proves control of your account to the requesting site.',
+      riskFlags: flags,
+      displayRows: rows,
+    };
+  }
+
+  const typedDataSummary = input.typedDataSummary && typeof input.typedDataSummary === 'object'
+    ? input.typedDataSummary as Record<string, unknown>
+    : {};
+  for (const label of ['domain', 'primaryType', 'verifyingContract']) {
+    const value = optionalString(typedDataSummary[label]);
+    if (value) rows.push({ label, value });
+  }
+  flags.push('typed-data-signature');
+  return {
+    riskLevel: optionalString(typedDataSummary.verifyingContract) ? 'medium' : 'high',
+    riskSummary: 'This site wants a structured typed-data signature.',
+    riskFlags: flags,
+    displayRows: rows,
+  };
+}
+
+function normalizePersonalSignRequest(params: unknown[] | undefined, activeAccount: string): { message: string } {
+  const values = normalizeArrayParams(params);
+  const first = optionalString(values[0]);
+  const second = optionalString(values[1]);
+  if (!first) throw new Error('personal_sign requires a message');
+  const activeLower = activeAccount.toLowerCase();
+  if (first.toLowerCase() === activeLower) {
+    if (!second) throw new Error('personal_sign requires a message');
+    return { message: second };
+  }
+  if (second && second.toLowerCase() !== activeLower) {
+    throw new Error('personal_sign account does not match the connected account');
+  }
+  return { message: first };
+}
+
+function normalizeTypedDataSignRequest(params: unknown[] | undefined, activeAccount: string): { typedData: unknown } {
+  const values = normalizeArrayParams(params);
+  const account = requireString(values[0], 'account');
+  if (account.toLowerCase() !== activeAccount.toLowerCase()) {
+    throw new Error('eth_signTypedData_v4 account does not match the connected account');
+  }
+  const typedData = values[1];
+  if (typedData == null) throw new Error('eth_signTypedData_v4 requires typed data');
+  if (typeof typedData === 'string') {
+    try {
+      return { typedData: JSON.parse(typedData) };
+    } catch {
+      throw new Error('eth_signTypedData_v4 typed data must be valid JSON');
+    }
+  }
+  if (typeof typedData !== 'object') throw new Error('eth_signTypedData_v4 typed data must be an object');
+  return { typedData };
+}
+
+function summarizeTypedDataForApproval(typedData: unknown): Record<string, string> {
+  if (!typedData || typeof typedData !== 'object') return {};
+  const data = typedData as Record<string, unknown>;
+  const domain = data.domain && typeof data.domain === 'object' ? data.domain as Record<string, unknown> : {};
+  const summary: Record<string, string> = {};
+  const domainName = optionalString(domain.name);
+  const domainChainId = optionalString(domain.chainId) ?? (typeof domain.chainId === 'number' ? String(domain.chainId) : null);
+  const verifyingContract = optionalString(domain.verifyingContract);
+  if (domainName || domainChainId) summary.domain = [domainName, domainChainId ? `chain ${domainChainId}` : null].filter(Boolean).join(' / ');
+  if (verifyingContract) summary.verifyingContract = verifyingContract;
+  const primaryType = optionalString(data.primaryType);
+  if (primaryType) summary.primaryType = primaryType;
+  return summary;
+}
+
+function previewSignableMessage(message: string): string {
+  const normalized = message.startsWith('0x') ? decodeHexMessagePreview(message) : message;
+  const compact = normalized.replace(/\s+/g, ' ').trim();
+  return compact.length > 96 ? `${compact.slice(0, 96)}...` : compact || '(empty message)';
+}
+
+function decodeHexMessagePreview(message: string): string {
+  if (!/^0x[0-9a-fA-F]*$/.test(message) || message.length % 2 !== 0) return message;
+  const bytes = Buffer.from(message.slice(2), 'hex');
+  const text = bytes.toString('utf8');
+  return /^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) ? text : `${bytes.length} bytes`;
+}
+
+async function signShellDappPayload(method: string, payload: unknown): Promise<string> {
+  if (!currentSigner) throw new Error('Wallet is locked');
+  const encoded = new TextEncoder().encode(`shella:${method}:${stableJsonStringify(payload)}`);
+  const digest = sha256(encoded);
+  const signature = await currentSigner.sign(digest);
+  return `0x${bytesToHex(signature)}`;
+}
+
+function stableJsonStringify(value: unknown): string {
+  if (value == null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableJsonStringify(item)).join(',')}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableJsonStringify(object[key])}`).join(',')}}`;
 }
 
 async function handleShellDappRequest(
@@ -4322,6 +4682,12 @@ async function handleShellDappRequest(
           pqAddress: activeAccount.pqAddress,
           chainId: network.chainId,
           networkName: network.name,
+          approvalRisk: buildApprovalRiskSummary('connect', {
+            origin,
+            account: activeAccount.pqAddress,
+            chainId: network.chainId,
+            networkName: network.name,
+          }),
         },
       });
       if (!approved) throw new Error('Request rejected by user');
@@ -4329,12 +4695,38 @@ async function handleShellDappRequest(
       await addConnectedSite(granted);
       return granted.accounts;
     }
+    case 'wallet_requestPermissions': {
+      const [permissions] = normalizeArrayParams(message.params);
+      if (!permissions || typeof permissions !== 'object') throw new Error('wallet_requestPermissions requires a permissions object');
+      if (!Object.prototype.hasOwnProperty.call(permissions, 'eth_accounts')) {
+        throw new Error('Only eth_accounts permission is supported');
+      }
+      const accounts = await handleShellDappRequest({ ...message, method: 'eth_requestAccounts' }, context) as string[];
+      return [{ parentCapability: 'eth_accounts', caveats: [{ type: 'restrictReturnedAccounts', value: accounts }] }];
+    }
+    case 'wallet_getPermissions': {
+      const activeConnectedAccount = getConnectedActiveAccountAddress(permission, activeAccount, getChainKind(network));
+      return activeConnectedAccount
+        ? [{ parentCapability: 'eth_accounts', caveats: [{ type: 'restrictReturnedAccounts', value: [activeConnectedAccount] }] }]
+        : [];
+    }
+    case 'wallet_revokePermissions': {
+      const [permissions] = normalizeArrayParams(message.params);
+      if (!permissions || typeof permissions !== 'object') throw new Error('wallet_revokePermissions requires a permissions object');
+      if (!Object.prototype.hasOwnProperty.call(permissions, 'eth_accounts')) {
+        throw new Error('Only eth_accounts permission can be revoked');
+      }
+      await removeConnectedSite(origin);
+      return null;
+    }
     case 'eth_accounts': {
       const activeConnectedAccount = getConnectedActiveAccountAddress(permission, activeAccount, getChainKind(network));
       return activeConnectedAccount ? [activeConnectedAccount] : [];
     }
     case 'eth_chainId':
       return `0x${network.chainId.toString(16)}`;
+    case 'net_version':
+      return String(network.chainId);
     case 'eth_blockNumber': {
       const provider = buildProvider(network);
       const blockNumber = await provider.client.getBlockNumber();
@@ -4376,10 +4768,72 @@ async function handleShellDappRequest(
           value: request.value,
           data: request.data ?? '0x',
           chainId: network.chainId,
+          approvalRisk: buildApprovalRiskSummary('send-transaction', {
+            origin,
+            account: activeConnectedAccount,
+            chainId: network.chainId,
+            networkName: network.name,
+            to: request.to,
+            value: request.value,
+            data: request.data ?? '0x',
+          }),
         },
       });
       if (!approved) throw new Error('Request rejected by user');
       return sendTransaction({ ...request, expectedChainId: network.chainId });
+    }
+    case 'personal_sign': {
+      const activeConnectedAccount = requireConnectedActiveAccount(permission, origin, activeAccount, getChainKind(network));
+      if (!currentSigner) throw new Error('Wallet is locked');
+      const request = normalizePersonalSignRequest(message.params, activeConnectedAccount);
+      const approved = await requestUserApproval({
+        kind: 'sign-message',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          account: activeConnectedAccount,
+          chainId: network.chainId,
+          networkName: network.name,
+          message: request.message,
+          messagePreview: previewSignableMessage(request.message),
+          approvalRisk: buildApprovalRiskSummary('sign-message', {
+            origin,
+            account: activeConnectedAccount,
+            chainId: network.chainId,
+            networkName: network.name,
+            message: request.message,
+          }),
+        },
+      });
+      if (!approved) throw new Error('Request rejected by user');
+      return signShellDappPayload('personal_sign', { origin, account: activeConnectedAccount, chainId: network.chainId, message: request.message });
+    }
+    case 'eth_signTypedData_v4': {
+      const activeConnectedAccount = requireConnectedActiveAccount(permission, origin, activeAccount, getChainKind(network));
+      if (!currentSigner) throw new Error('Wallet is locked');
+      const request = normalizeTypedDataSignRequest(message.params, activeConnectedAccount);
+      const typedDataSummary = summarizeTypedDataForApproval(request.typedData);
+      const approved = await requestUserApproval({
+        kind: 'sign-typed-data',
+        origin,
+        createdAt: Date.now(),
+        payload: {
+          account: activeConnectedAccount,
+          chainId: network.chainId,
+          networkName: network.name,
+          typedData: request.typedData,
+          typedDataSummary,
+          approvalRisk: buildApprovalRiskSummary('sign-typed-data', {
+            origin,
+            account: activeConnectedAccount,
+            chainId: network.chainId,
+            networkName: network.name,
+            typedDataSummary,
+          }),
+        },
+      });
+      if (!approved) throw new Error('Request rejected by user');
+      return signShellDappPayload('eth_signTypedData_v4', { origin, account: activeConnectedAccount, chainId: network.chainId, typedData: request.typedData });
     }
     case 'eth_call': {
       const [tx] = normalizeArrayParams(message.params);
@@ -4418,6 +4872,12 @@ async function handleShellDappRequest(
           chainId: nextNetwork.chainId,
           networkName: nextNetwork.name,
           rpcUrl: nextNetwork.rpcUrl,
+          approvalRisk: buildApprovalRiskSummary('switch-chain', {
+            origin,
+            chainId: nextNetwork.chainId,
+            networkName: nextNetwork.name,
+            rpcUrl: nextNetwork.rpcUrl,
+          }),
         },
       });
       if (!approved) throw new Error('Request rejected by user');
@@ -4453,6 +4913,12 @@ async function handleShellDappRequest(
           chainId: nextNetwork.chainId,
           networkName: nextNetwork.name,
           rpcUrl: nextNetwork.rpcUrl,
+          approvalRisk: buildApprovalRiskSummary('add-chain', {
+            origin,
+            chainId: nextNetwork.chainId,
+            networkName: nextNetwork.name,
+            rpcUrl: nextNetwork.rpcUrl,
+          }),
         },
       });
       if (!approved) throw new Error('Request rejected by user');
@@ -4492,6 +4958,15 @@ async function handleShellDappRequest(
           value: request.value,
           data: request.data ?? '0x',
           chainId: network.chainId,
+          approvalRisk: buildApprovalRiskSummary('send-transaction', {
+            origin,
+            account: activeConnectedAccount,
+            chainId: network.chainId,
+            networkName: network.name,
+            to: request.to,
+            value: request.value,
+            data: request.data ?? '0x',
+          }),
         },
       });
       if (!approved) throw new Error('Request rejected by user');
@@ -5753,6 +6228,15 @@ function validateRpcUrl(url: string, field: string): string {
   }
 
   return url;
+}
+
+function isLocalRpcUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === 'http:' && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1');
+  } catch {
+    return false;
+  }
 }
 
 function requirePassword(value: unknown): string {

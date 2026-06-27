@@ -256,6 +256,29 @@ export interface WatchedToken {
   addedAt: number;
 }
 
+export interface PortfolioAsset {
+  chainKind: ChainKind;
+  chainId: number;
+  networkName: string;
+  address: string;
+  assetType: 'native' | 'token' | 'cosmos-denom';
+  symbol: string;
+  name?: string | null;
+  contractAddress?: string | null;
+  rawBalance: string | null;
+  formattedBalance: string | null;
+  decimals: number;
+  status: 'ok' | 'unavailable';
+  error?: string | null;
+}
+
+export interface ApprovalRiskSummary {
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  riskSummary: string;
+  riskFlags: string[];
+  displayRows: Array<{ label: string; value: string }>;
+}
+
 export type WalletTxStatus = 'pending' | 'confirmed' | 'failed';
 
 export interface WalletTxRecord {
@@ -380,6 +403,7 @@ export interface WalletSnapshot {
   nonce: number | null;
   detectedChainId: number | null;
   nodeInfo?: WalletNodeInfo | null;
+  portfolioAssets?: PortfolioAsset[];
 }
 
 /**
@@ -425,7 +449,7 @@ export interface AaBatchInnerCall {
 
 export interface ApprovalRequest {
   id: string;
-  kind: 'connect' | 'add-chain' | 'switch-chain' | 'send-transaction' | 'walletconnect-proposal' | 'tonconnect-proposal' | 'tonconnect-request' | 'cosmos-sign-direct' | 'cosmos-sign-amino' | 'aptos-sign-transaction';
+  kind: 'connect' | 'add-chain' | 'switch-chain' | 'send-transaction' | 'sign-message' | 'sign-typed-data' | 'walletconnect-proposal' | 'tonconnect-proposal' | 'tonconnect-request' | 'cosmos-sign-direct' | 'cosmos-sign-amino' | 'aptos-sign-transaction';
   origin: string;
   createdAt: number;
   payload: Record<string, unknown>;

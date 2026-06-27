@@ -1593,6 +1593,14 @@ test('dapp provider grants site access and proxies read methods', async () => {
   });
   assert.equal(chainId, '0x67932');
 
+  const netVersion = await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://app.shell.org',
+    method: 'net_version',
+    params: [],
+  });
+  assert.equal(netVersion, '424242');
+
   const blockNumber = await handleMessage({
     type: 'DAPP_REQUEST',
     origin: 'https://app.shell.org',
@@ -1617,6 +1625,124 @@ test('dapp provider grants site access and proxies read methods', async () => {
     params: [],
   });
   assert.deepEqual(noAccounts, []);
+});
+
+test('dapp provider supports permissions, revocation, and Shell message signing approvals', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  const approvalsBeforeRequest = createdWindows.length;
+  const permissionsPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'wallet_requestPermissions',
+    params: [{ eth_accounts: {} }],
+  });
+  const connectRequest = await resolveLatestApproval(true, approvalsBeforeRequest);
+  assert.equal(connectRequest.payload.approvalRisk.riskLevel, 'low');
+  const permissions = await permissionsPromise;
+  assert.equal(permissions[0].parentCapability, 'eth_accounts');
+  assert.deepEqual(permissions[0].caveats[0].value, [created.pqAddress]);
+
+  const currentPermissions = await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'wallet_getPermissions',
+    params: [],
+  });
+  assert.deepEqual(currentPermissions[0].caveats[0].value, [created.pqAddress]);
+
+  const approvalsBeforeSign = createdWindows.length;
+  const signPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'personal_sign',
+    params: ['Shell login challenge', created.pqAddress],
+  });
+  const signRequest = await resolveLatestApproval(true, approvalsBeforeSign);
+  assert.equal(signRequest.kind, 'sign-message');
+  assert.equal(signRequest.payload.approvalRisk.riskLevel, 'medium');
+  assert.match(await signPromise, /^0x[0-9a-f]+$/);
+
+  const approvalsBeforeTyped = createdWindows.length;
+  const typedPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'eth_signTypedData_v4',
+    params: [created.pqAddress, JSON.stringify({
+      domain: { name: 'Shell dApp', chainId: 424242, verifyingContract: '0x' + '12'.repeat(32) },
+      primaryType: 'Permit',
+      types: { Permit: [{ name: 'spender', type: 'address' }] },
+      message: { spender: '0x' + '34'.repeat(32) },
+    })],
+  });
+  const typedRequest = await resolveLatestApproval(true, approvalsBeforeTyped);
+  assert.equal(typedRequest.kind, 'sign-typed-data');
+  assert.equal(typedRequest.payload.typedDataSummary.primaryType, 'Permit');
+  assert.match(await typedPromise, /^0x[0-9a-f]+$/);
+
+  await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'wallet_revokePermissions',
+    params: [{ eth_accounts: {} }],
+  });
+  const accountsAfterRevoke = await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'eth_accounts',
+    params: [],
+  });
+  assert.deepEqual(accountsAfterRevoke, []);
+});
+
+test('disconnect all clears dApp, WalletConnect, and TonConnect sessions without deleting wallet data', async () => {
+  const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
+  const password = 'hdwallet-test-password!';
+  await handleMessage({ type: 'RESET_WALLET' });
+  const created = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic, password });
+  await handleMessage({ type: 'ADD_CONNECTED_SITE', origin: 'https://dapp.example' });
+  await handleMessage({
+    type: 'CREATE_WALLETCONNECT_SESSION',
+    topic: 'wc-disconnect-all',
+    origin: 'https://wc-disconnect.example',
+    chainIds: [424242],
+    methods: ['eth_chainId'],
+    expirySeconds: 60,
+  });
+  await handleMessage({
+    type: 'SET_NETWORK',
+    network: {
+      name: 'TON Mainnet',
+      chainId: 607,
+      rpcUrl: 'https://toncenter.com/api/v2',
+      kind: 'ton',
+      symbol: 'TON',
+    },
+  });
+  await handleMessage({
+    type: 'CREATE_TONCONNECT_SESSION',
+    clientId: 'ton-disconnect-all',
+    origin: 'https://ton-disconnect.example',
+    manifestUrl: 'https://ton-disconnect.example/tonconnect-manifest.json',
+    features: [{ name: 'SendTransaction', maxMessages: 4 }],
+    expirySeconds: 60,
+  });
+
+  assert.equal((await handleMessage({ type: 'GET_CONNECTED_SITES' })).sites.length > 0, true);
+  assert.equal((await handleMessage({ type: 'GET_WALLETCONNECT_SESSIONS' })).sessions.length, 1);
+  assert.equal((await handleMessage({ type: 'GET_TONCONNECT_SESSIONS' })).sessions.length, 1);
+
+  await handleMessage({ type: 'DISCONNECT_ALL_SITES' });
+
+  assert.deepEqual((await handleMessage({ type: 'GET_CONNECTED_SITES' })).sites, []);
+  assert.deepEqual((await handleMessage({ type: 'GET_WALLETCONNECT_SESSIONS' })).sessions, []);
+  assert.deepEqual((await handleMessage({ type: 'GET_TONCONNECT_SESSIONS' })).sessions, []);
+  const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+  assert.equal(snapshot.wallet.accounts.length, 1);
+  assert.equal(snapshot.wallet.accounts[0].pqAddress, created.pqAddress);
 });
 
 test('walletconnect sessions enforce chain, method, and expiry allowlists', async () => {
@@ -2087,6 +2213,18 @@ test('Shell ERC20 info, balance, and transfer are supported through token provid
   assert.equal(snapshotWithToken.wallet.watchedTokens[0].contractAddress, tokenAddress);
   assert.equal(snapshotWithToken.wallet.watchedTokens[0].symbol, 'SHELLUSD');
   assert.equal(snapshotWithToken.wallet.watchedTokens[0].decimals, 18);
+  assert.ok(snapshotWithToken.portfolioAssets.some((asset) =>
+    asset.assetType === 'native' &&
+    asset.chainKind === 'shell' &&
+    asset.symbol === 'SHELL' &&
+    asset.status === 'ok',
+  ));
+  assert.ok(snapshotWithToken.portfolioAssets.some((asset) =>
+    asset.assetType === 'token' &&
+    asset.contractAddress === tokenAddress &&
+    asset.symbol === 'SHELLUSD' &&
+    asset.formattedBalance === '1.234567890123456789',
+  ));
 
   const info = await handleMessage({ type: 'GET_ERC20_TOKEN_INFO', contractAddress: tokenAddress });
   assert.deepEqual(info, { contractAddress: tokenAddress, decimals: 18, symbol: 'SHELLUSD' });

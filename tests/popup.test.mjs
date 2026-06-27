@@ -189,6 +189,23 @@ describe('popup', async () => {
       accounts: [{ pqAddress: '0x' + 'a'.repeat(64) }],
       watchedTokens: [],
       tokenBalances: {},
+      portfolioAssets: [
+        {
+          chainKind: 'shell',
+          chainId: 424242,
+          networkName: 'Shell Devnet',
+          address: '0x' + 'a'.repeat(64),
+          assetType: 'native',
+          symbol: 'SHELL',
+          name: 'Shell Devnet',
+          contractAddress: null,
+          rawBalance: '1250000000000000000',
+          formattedBalance: '1.250000',
+          decimals: 18,
+          status: 'ok',
+          error: null,
+        },
+      ],
       txQueue: [],
       nodeInfo: null,
     });
@@ -198,6 +215,8 @@ describe('popup', async () => {
     assert.ok(html.includes('Chain health'));
     assert.ok(html.includes('Chain health needs attention') || html.includes('RPC status pending'));
     assert.ok(html.includes('section-header-title'));
+    assert.ok(html.includes('Assets'));
+    assert.ok(html.includes('portfolio-assets'));
     assert.ok(html.includes('No ERC20 tokens added'));
     assert.ok(html.includes('Copy'));
   });
@@ -257,6 +276,12 @@ describe('popup', async () => {
           value: '1000000000000000000',
           chainKind: 'shell',
           chainId: 424242,
+          approvalRisk: {
+            riskLevel: 'medium',
+            riskSummary: 'This transaction includes contract calldata.',
+            riskFlags: ['calldata-present'],
+            displayRows: [{ label: 'Origin', value: 'https://dapp.example' }],
+          },
         },
       },
     });
@@ -265,6 +290,8 @@ describe('popup', async () => {
     assert.ok(html.includes('approval-hero'));
     assert.ok(html.includes('https://dapp.example'));
     assert.ok(html.includes('approval-summary-grid'));
+    assert.ok(html.includes('This transaction includes contract calldata.'));
+    assert.ok(html.includes('Risk medium'));
     assert.ok(html.includes('approval-details'));
     assert.ok(html.includes('sticky-actions approval-actions'));
     assert.ok(html.includes('btn-approval-approve'));
@@ -277,7 +304,35 @@ describe('popup', async () => {
     if (typeof __setPopupStateForTest !== 'function' || typeof renderSettings !== 'function') return;
 
     __setPopupStateForTest({
-      connectedSites: [],
+      connectedSites: [{
+        origin: 'https://dapp.example',
+        accounts: ['0x' + 'a'.repeat(64)],
+        chainId: 424242,
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+      }],
+      walletConnectSessions: [{
+        topic: 'wc-topic',
+        origin: 'https://wc.example',
+        accounts: ['eip155:424242:0x' + 'a'.repeat(64)],
+        chainIds: [424242],
+        methods: ['eth_chainId'],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      }],
+      tonConnectSessions: [{
+        clientId: 'ton-client',
+        origin: 'https://ton.example',
+        manifestUrl: 'https://ton.example/tonconnect-manifest.json',
+        account: 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c',
+        chainId: 607,
+        network: 'mainnet',
+        features: [{ name: 'SendTransaction', maxMessages: 4 }],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      }],
       walletConnectPairings: [],
       walletConnectRelayStatus: { initialized: false, projectIdConfigured: false, relayUrl: '', lastError: null },
       walletConnectProjectId: '',
@@ -292,6 +347,10 @@ describe('popup', async () => {
     }
     assert.ok(html.includes('custom-rpc-panel'));
     assert.ok(html.includes('Relay not initialized'));
+    assert.ok(html.includes('https://dapp.example'));
+    assert.ok(html.includes('https://wc.example'));
+    assert.ok(html.includes('https://ton.example'));
+    assert.ok(html.includes('btn-disconnect-all-sites'));
     assert.ok(html.includes('Reset deletes local wallet data'));
   });
 

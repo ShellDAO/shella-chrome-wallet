@@ -20,9 +20,12 @@ import type {
   CosmosValidatorSummary,
   ConnectedSitePermission,
   Network,
+  PortfolioAsset,
+  TonConnectSession,
   WalletConnectConfig,
   WalletConnectPairing,
   WalletConnectRelayStatus,
+  WalletConnectSession,
   WalletNodeInfo,
   WalletSnapshot,
   WalletTxRecord,
@@ -77,12 +80,15 @@ interface AppState {
   autoLockMinutes: number;
   connectedSites: ConnectedSitePermission[];
   walletConnectConfig: WalletConnectConfig;
+  walletConnectSessions: WalletConnectSession[];
+  tonConnectSessions: TonConnectSession[];
   walletConnectPairings: WalletConnectPairing[];
   walletConnectRelayStatus: WalletConnectRelayStatus | null;
   txHistory: WalletTxRecord[];
   txQueue: WalletTxRecord[];
   watchedTokens: WatchedToken[];
   tokenBalances: Record<string, { balance: string; formatted: string; symbol: string; decimals: number }>;
+  portfolioAssets: PortfolioAsset[];
   cosmosBalances: CosmosDenomBalance[];
   cosmosStaking: CosmosStakingPosition[];
   cosmosRedelegations: CosmosRedelegationEntry[];
@@ -340,12 +346,15 @@ const state: AppState = {
   autoLockMinutes: 15,
   connectedSites: [],
   walletConnectConfig: { projectId: '', relayUrl: '' },
+  walletConnectSessions: [],
+  tonConnectSessions: [],
   walletConnectPairings: [],
   walletConnectRelayStatus: null,
   txHistory: [],
   txQueue: [],
   watchedTokens: [],
   tokenBalances: {},
+  portfolioAssets: [],
   cosmosBalances: [],
   cosmosStaking: [],
   cosmosRedelegations: [],
@@ -933,6 +942,7 @@ export function renderWallet(): string {
   const cosmosRedelegationsHtml = renderCosmosRedelegations();
   const cosmosValidatorsHtml = renderCosmosValidators();
   const cosmosGovernanceHtml = renderCosmosGovernanceProposals();
+  const portfolioHtml = renderPortfolioAssets();
   const tokenHtml = renderTokenAssets();
 
   // Storage profile badge (v0.18.0)
@@ -1037,6 +1047,7 @@ export function renderWallet(): string {
           </button>
         ` : ''}
       </div>
+      ${portfolioHtml}
       ${cosmosAssetsHtml}
       ${cosmosStakingHtml}
       ${cosmosRedelegationsHtml}
@@ -1045,6 +1056,36 @@ export function renderWallet(): string {
       ${tokenHtml}
       ${failedHtml}
       ${pendingHtml}
+    </div>
+  `;
+}
+
+function renderPortfolioAssets(): string {
+  const assets = state.portfolioAssets.length > 0
+    ? state.portfolioAssets
+    : [];
+  const rows = assets.length > 0
+    ? assets.map((asset) => `
+        <div class="token-item ${asset.status === 'unavailable' ? 'token-item-warning' : ''}">
+          <div class="token-main">
+            <span class="token-symbol">${escapeHtml(asset.symbol)}</span>
+            <span class="monospace token-contract">${escapeHtml(asset.assetType === 'native' ? asset.networkName : truncate(asset.contractAddress ?? asset.name ?? '', 12, 10))}</span>
+            ${asset.error ? `<span class="muted">${escapeHtml(asset.error)}</span>` : ''}
+          </div>
+          <div class="token-balance">
+            <span>${escapeHtml(asset.formattedBalance ?? 'unavailable')}</span>
+            <span>${escapeHtml(asset.symbol)}</span>
+          </div>
+        </div>
+      `).join('')
+    : '<div class="empty-panel compact-empty">No portfolio assets available for this network</div>';
+  return `
+    <div class="token-card portfolio-assets">
+      <div class="section-header">
+        <span class="section-header-title">Assets</span>
+        <span class="muted">${escapeHtml(state.network.name)}</span>
+      </div>
+      ${rows}
     </div>
   `;
 }
@@ -1942,21 +1983,66 @@ function renderSwitchAccount(): string {
   `;
 }
 
-export function renderSettings(): string {
-  const connectedSitesHtml = state.connectedSites.length > 0
-    ? state.connectedSites.map((site) => `
-        <div class="site-item">
-          <div class="site-item-main">
-            <div class="site-origin">${escapeHtml(site.origin)}</div>
-            <div class="site-meta">
-              <span>${escapeHtml(site.accounts.length > 0 ? truncate(site.accounts[0], 8, 6) : 'No accounts')}</span>
-              <span>Chain ${site.chainId}</span>
-            </div>
-          </div>
-          <button class="btn-secondary btn-site-revoke" data-origin="${escapeHtml(site.origin)}">Revoke</button>
+function renderConnectedDappsCenter(): string {
+  const siteRows = state.connectedSites.map((site) => `
+    <div class="site-item">
+      <div class="site-item-main">
+        <div class="site-origin">${escapeHtml(site.origin)}</div>
+        <div class="site-meta">
+          <span>EVM/Shell</span>
+          <span>${escapeHtml(site.accounts.length > 0 ? site.accounts.map((account) => truncate(account, 8, 6)).join(', ') : 'No accounts')}</span>
+          <span>Chain ${site.chainId}</span>
+          <span>Granted ${escapeHtml(formatTimestamp(site.grantedAt))}</span>
         </div>
-      `).join('')
-    : '<div class="empty-panel compact-empty">No connected dApps yet</div>';
+      </div>
+      <button class="btn-secondary btn-site-revoke" data-origin="${escapeHtml(site.origin)}">Disconnect</button>
+    </div>
+  `);
+  const wcRows = state.walletConnectSessions.map((session) => `
+    <div class="site-item">
+      <div class="site-item-main">
+        <div class="site-origin">${escapeHtml(session.origin)}</div>
+        <div class="site-meta">
+          <span>WalletConnect</span>
+          <span>${escapeHtml(session.accounts.map((account) => truncate(account, 8, 6)).join(', ') || 'No accounts')}</span>
+          <span>${escapeHtml(session.chainIds.map((chainId) => `Chain ${chainId}`).join(', ') || 'No chains')}</span>
+          <span>${escapeHtml(session.methods.join(', ') || 'No methods')}</span>
+          <span>Expires ${escapeHtml(formatWalletConnectExpiry(session.expiresAt))}</span>
+        </div>
+      </div>
+      <button class="btn-secondary btn-wc-session-remove" data-topic="${escapeHtml(session.topic)}">Disconnect</button>
+    </div>
+  `);
+  const tonRows = state.tonConnectSessions.map((session) => `
+    <div class="site-item">
+      <div class="site-item-main">
+        <div class="site-origin">${escapeHtml(session.origin)}</div>
+        <div class="site-meta">
+          <span>TonConnect</span>
+          <span>${escapeHtml(truncate(session.account, 8, 6))}</span>
+          <span>${escapeHtml(session.network)} / Chain ${session.chainId}</span>
+          <span>${escapeHtml(session.features.map((feature) => feature.name).join(', ') || 'No features')}</span>
+          <span>Expires ${escapeHtml(formatWalletConnectExpiry(session.expiresAt))}</span>
+        </div>
+      </div>
+      <button class="btn-secondary btn-ton-session-remove" data-client-id="${escapeHtml(session.clientId)}">Disconnect</button>
+    </div>
+  `);
+  const rows = [...siteRows, ...wcRows, ...tonRows];
+  if (rows.length === 0) return '<div class="empty-panel compact-empty">No connected dApps yet</div>';
+  return `
+    ${rows.join('')}
+    <button id="btn-disconnect-all-sites" class="btn-danger">Disconnect all</button>
+  `;
+}
+
+function formatTimestamp(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return 'unknown';
+  return new Date(value).toLocaleString();
+}
+
+export function renderSettings(): string {
+  const connectedDappsHtml = renderConnectedDappsCenter();
   const walletConnectPairingsHtml = state.walletConnectPairings.length > 0
     ? state.walletConnectPairings.map((pairing) => `
         <div class="site-item">
@@ -2020,7 +2106,7 @@ export function renderSettings(): string {
 
       <section class="form-section settings-section">
         <div class="section-header"><span class="section-header-title">Connected dApps</span></div>
-        <div class="site-list">${connectedSitesHtml}</div>
+        <div class="site-list">${connectedDappsHtml}</div>
       </section>
 
       <section class="form-section settings-section">
@@ -2132,8 +2218,13 @@ function approvalSummary(request: ApprovalRequest): {
   primaryValue: string;
   recipient: string;
   risk: string;
+  riskLevel: string;
+  riskRows: Array<{ label: string; value: string }>;
 } {
   const payload = request.payload;
+  const approvalRisk = payload.approvalRisk && typeof payload.approvalRisk === 'object'
+    ? payload.approvalRisk as { riskLevel?: unknown; riskSummary?: unknown; displayRows?: unknown }
+    : null;
   const account = String(payload.account ?? payload.accounts ?? '');
   const chain = payload.chainKind || payload.chainId
     ? `${String(payload.chainKind ?? 'chain')}:${String(payload.chainId ?? '')}`
@@ -2144,8 +2235,17 @@ function approvalSummary(request: ApprovalRequest): {
     ? `${String(payload.value ?? payload.amount ?? '0')} ${String(token)}`
     : String(payload.value ?? payload.totalNanotons ?? payload.amountOctas ?? '0');
   const recipient = String(payload.to ?? payload.recipient ?? payload.manifestUrl ?? payload.topic ?? '');
-  const risk = String(payload.riskSummary ?? payload.riskLevel ?? (request.kind.includes('sign') ? 'Review signing details before approving.' : 'Review request details before approving.'));
-  return { account, chain, method, primaryValue, recipient, risk };
+  const risk = String(approvalRisk?.riskSummary ?? payload.riskSummary ?? payload.riskLevel ?? (request.kind.includes('sign') ? 'Review signing details before approving.' : 'Review request details before approving.'));
+  const riskLevel = String(approvalRisk?.riskLevel ?? payload.riskLevel ?? 'medium');
+  const riskRows = Array.isArray(approvalRisk?.displayRows)
+    ? approvalRisk.displayRows.flatMap((row) => {
+        if (!row || typeof row !== 'object') return [];
+        const label = (row as { label?: unknown }).label;
+        const value = (row as { value?: unknown }).value;
+        return typeof label === 'string' && typeof value === 'string' ? [{ label, value }] : [];
+      })
+    : [];
+  return { account, chain, method, primaryValue, recipient, risk, riskLevel, riskRows };
 }
 
 export function renderApprovalRequest(): string {
@@ -2159,6 +2259,12 @@ export function renderApprovalRequest(): string {
     `;
   }
   const summary = approvalSummary(request);
+  const riskRowsHtml = summary.riskRows.length > 0
+    ? summary.riskRows.map((row) => `
+        <span>${escapeHtml(row.label)}</span><strong class="monospace">${escapeHtml(row.value)}</strong>
+      `).join('')
+    : '';
+  const approveLabel = summary.riskLevel === 'critical' || summary.riskLevel === 'high' ? 'Approve risky request' : 'Approve';
 
   // Detect AA batch transaction (tx_type = 0x7e)
   const isBatchTx = request.kind === 'send-transaction' &&
@@ -2556,9 +2662,10 @@ export function renderApprovalRequest(): string {
           <span>Recipient</span><strong class="monospace">${escapeHtml(summary.recipient || 'Not specified')}</strong>
           <span>Value</span><strong>${escapeHtml(summary.primaryValue)}</strong>
           <span>Risk</span><strong>${escapeHtml(summary.risk)}</strong>
+          ${riskRowsHtml}
         </div>
       </div>
-      <div class="status-card status-card-warning">This site is requesting: <strong>${escapeHtml(request.kind)}</strong></div>
+      <div class="status-card ${summary.riskLevel === 'critical' || summary.riskLevel === 'high' ? 'status-card-error' : 'status-card-warning'}">This site is requesting: <strong>${escapeHtml(request.kind)}</strong> · Risk ${escapeHtml(summary.riskLevel)}</div>
       <details class="disclosure approval-details">
         <summary>Details</summary>
         <div class="disclosure-body">${detailsHtml}</div>
@@ -2566,7 +2673,7 @@ export function renderApprovalRequest(): string {
       ${renderError()}
       <div class="sticky-actions approval-actions">
         <button id="btn-approval-reject" class="btn-danger">Reject</button>
-        <button id="btn-approval-approve" class="btn-primary">Approve</button>
+        <button id="btn-approval-approve" class="btn-primary">${escapeHtml(approveLabel)}</button>
       </div>
     </div>
   `;
@@ -3981,6 +4088,47 @@ function attachHandlers(): void {
         }
       });
     });
+    document.querySelectorAll<HTMLButtonElement>('.btn-wc-session-remove').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const topic = button.dataset.topic;
+        if (!topic) return;
+        try {
+          await send('REMOVE_WALLETCONNECT_SESSION', { topic });
+          state.walletConnectSessions = state.walletConnectSessions.filter((session) => session.topic !== topic);
+          render();
+          showToast('WalletConnect session disconnected');
+        } catch (err) {
+          showToast((err as Error).message, true);
+        }
+      });
+    });
+    document.querySelectorAll<HTMLButtonElement>('.btn-ton-session-remove').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const clientId = button.dataset.clientId;
+        if (!clientId) return;
+        try {
+          await send('REMOVE_TONCONNECT_SESSION', { clientId });
+          state.tonConnectSessions = state.tonConnectSessions.filter((session) => session.clientId !== clientId);
+          render();
+          showToast('TonConnect session disconnected');
+        } catch (err) {
+          showToast((err as Error).message, true);
+        }
+      });
+    });
+    on('btn-disconnect-all-sites', 'click', async () => {
+      if (!confirm('Disconnect all dApps and WalletConnect/TonConnect sessions?')) return;
+      try {
+        await send('DISCONNECT_ALL_SITES');
+        state.connectedSites = [];
+        state.walletConnectSessions = [];
+        state.tonConnectSessions = [];
+        render();
+        showToast('All dApps disconnected');
+      } catch (err) {
+        showToast((err as Error).message, true);
+      }
+    });
   }
 }
 
@@ -4038,7 +4186,10 @@ async function refreshWalletData(): Promise<void> {
   state.walletConnectConfig = snapshot.wallet.walletConnectConfig ?? { projectId: '', relayUrl: '' };
   state.walletConnectProjectId = state.walletConnectConfig.projectId;
   state.walletConnectRelayUrl = state.walletConnectConfig.relayUrl;
+  state.walletConnectSessions = snapshot.wallet.walletConnectSessions ?? [];
+  state.tonConnectSessions = snapshot.wallet.tonConnectSessions ?? [];
   state.walletConnectPairings = snapshot.wallet.walletConnectPairings ?? [];
+  state.portfolioAssets = snapshot.portfolioAssets ?? [];
   state.bitcoinUtxoPreferences = snapshot.wallet.bitcoinUtxoPreferences ?? [];
   state.walletConnectRelayStatus = await send<WalletConnectRelayStatus>('GET_WALLETCONNECT_RELAY_STATUS').catch(() => null);
   state.detectedChainId = snapshot.detectedChainId;
@@ -4360,7 +4511,10 @@ async function boot(): Promise<void> {
   state.walletConnectConfig = snapshot.wallet.walletConnectConfig ?? { projectId: '', relayUrl: '' };
   state.walletConnectProjectId = state.walletConnectConfig.projectId;
   state.walletConnectRelayUrl = state.walletConnectConfig.relayUrl;
+  state.walletConnectSessions = snapshot.wallet.walletConnectSessions ?? [];
+  state.tonConnectSessions = snapshot.wallet.tonConnectSessions ?? [];
   state.walletConnectPairings = snapshot.wallet.walletConnectPairings ?? [];
+  state.portfolioAssets = snapshot.portfolioAssets ?? [];
   state.bitcoinUtxoPreferences = snapshot.wallet.bitcoinUtxoPreferences ?? [];
   state.walletConnectRelayStatus = await send<WalletConnectRelayStatus>('GET_WALLETCONNECT_RELAY_STATUS').catch(() => null);
   state.detectedChainId = snapshot.detectedChainId;

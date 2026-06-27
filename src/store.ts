@@ -609,6 +609,10 @@ export async function removeConnectedSite(origin: string): Promise<void> {
   });
 }
 
+export async function clearConnectedSites(): Promise<void> {
+  await chrome.storage.local.set({ connectedSites: [] });
+}
+
 export async function getWalletConnectSessions(): Promise<WalletConnectSession[]> {
   const { walletConnectSessions } = await chrome.storage.local.get('walletConnectSessions');
   return normalizeWalletConnectSessions(walletConnectSessions).sessions;
@@ -626,6 +630,10 @@ export async function removeWalletConnectSession(topic: string): Promise<void> {
   await chrome.storage.local.set({
     walletConnectSessions: sessions.filter((session) => session.topic !== topic),
   });
+}
+
+export async function clearWalletConnectSessions(): Promise<void> {
+  await chrome.storage.local.set({ walletConnectSessions: [] });
 }
 
 export async function getTonConnectSessions(): Promise<TonConnectSession[]> {
@@ -647,6 +655,10 @@ export async function removeTonConnectSession(clientId: string): Promise<void> {
   await chrome.storage.local.set({
     tonConnectSessions: sessions.filter((session) => session.clientId !== clientId),
   });
+}
+
+export async function clearTonConnectSessions(): Promise<void> {
+  await chrome.storage.local.set({ tonConnectSessions: [] });
 }
 
 export async function getWalletConnectPairings(): Promise<WalletConnectPairing[]> {
