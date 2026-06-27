@@ -108,6 +108,7 @@ try {
   }), dappOrigin);
   const connectApproval = await connectApprovalPromise;
   await connectApproval.waitForSelector('#btn-approval-approve', { timeout: 45000 });
+  await openApprovalDetails(connectApproval);
   const connectText = await connectApproval.locator('body').innerText();
   assert.match(connectText, /tonconnect-proposal/);
   assert.match(connectText, /ton-smoke-client/);
@@ -133,6 +134,7 @@ try {
   }), connected.account);
   const txApproval = await txApprovalPromise;
   await txApproval.waitForSelector('#btn-approval-reject', { timeout: 45000 });
+  await openApprovalDetails(txApproval);
   const txText = await txApproval.locator('body').innerText();
   assert.match(txText, /tonconnect-request/);
   assert.match(txText, /100000000/);
@@ -236,6 +238,14 @@ async function removeTonConnectSession(page, clientId) {
       resolve(response);
     });
   }), clientId);
+}
+
+async function openApprovalDetails(page) {
+  const details = page.locator('.approval-details');
+  if (await details.count() === 0) return;
+  await details.evaluate((node) => {
+    if (node instanceof HTMLDetailsElement) node.open = true;
+  });
 }
 
 async function writeArtifact(data) {
