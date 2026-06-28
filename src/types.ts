@@ -291,6 +291,45 @@ export interface PortfolioAsset {
   error?: string | null;
 }
 
+export interface PortfolioNetworkAsset {
+  chainKind: ChainKind;
+  chainId: number;
+  networkName: string;
+  rpcProvenance: NonNullable<Network['rpcProvenance']>;
+  address: string | null;
+  symbol: string;
+  nativeAsset: PortfolioAsset | null;
+  watchedTokenCount: number;
+  status: 'ok' | 'stale' | 'unavailable';
+  error?: string | null;
+  updatedAt: number;
+}
+
+export interface PortfolioSnapshot {
+  accountId: string | null;
+  generatedAt: number;
+  networks: PortfolioNetworkAsset[];
+}
+
+export interface UnifiedDappSession {
+  id: string;
+  kind: 'connected-site' | 'walletconnect' | 'tonconnect';
+  origin: string;
+  protocol: 'EIP-1193' | 'WalletConnect' | 'TonConnect';
+  accounts: string[];
+  chains: string[];
+  methods: string[];
+  grantedAt: number;
+  lastUsedAt: number;
+  expiresAt: number | null;
+  riskFlags: string[];
+}
+
+export interface DappSessionsSnapshot {
+  generatedAt: number;
+  sessions: UnifiedDappSession[];
+}
+
 export interface ApprovalRiskSummary {
   riskLevel: 'low' | 'medium' | 'high' | 'critical';
   riskSummary: string;
@@ -426,6 +465,7 @@ export interface WalletSnapshot {
   detectedChainId: number | null;
   nodeInfo?: WalletNodeInfo | null;
   portfolioAssets?: PortfolioAsset[];
+  portfolioSnapshot?: PortfolioSnapshot | null;
 }
 
 /**

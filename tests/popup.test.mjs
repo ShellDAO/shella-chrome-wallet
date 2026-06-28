@@ -228,6 +228,52 @@ describe('popup', async () => {
           error: null,
         },
       ],
+      portfolioSnapshot: {
+        accountId: 'hd:0',
+        generatedAt: Date.UTC(2026, 5, 28, 3, 12, 0),
+        networks: [
+          {
+            chainKind: 'shell',
+            chainId: 424242,
+            networkName: 'Shell Devnet',
+            rpcProvenance: 'owned',
+            address: '0x' + 'a'.repeat(64),
+            symbol: 'SHELL',
+            nativeAsset: {
+              chainKind: 'shell',
+              chainId: 424242,
+              networkName: 'Shell Devnet',
+              address: '0x' + 'a'.repeat(64),
+              assetType: 'native',
+              symbol: 'SHELL',
+              name: 'Shell Devnet',
+              contractAddress: null,
+              rawBalance: '1250000000000000000',
+              formattedBalance: '1.250000',
+              decimals: 18,
+              status: 'ok',
+              error: null,
+            },
+            watchedTokenCount: 1,
+            status: 'ok',
+            error: null,
+            updatedAt: Date.UTC(2026, 5, 28, 3, 12, 0),
+          },
+          {
+            chainKind: 'aptos',
+            chainId: 2,
+            networkName: 'Aptos Testnet',
+            rpcProvenance: 'official-public',
+            address: '0x' + '1'.repeat(64),
+            symbol: 'APT',
+            nativeAsset: null,
+            watchedTokenCount: 0,
+            status: 'unavailable',
+            error: 'Balance request timed out',
+            updatedAt: Date.UTC(2026, 5, 28, 3, 12, 0),
+          },
+        ],
+      },
       txQueue: [],
       nodeInfo: null,
     });
@@ -237,6 +283,11 @@ describe('popup', async () => {
     assert.ok(html.includes('Chain health'));
     assert.ok(html.includes('Chain health needs attention') || html.includes('RPC status pending'));
     assert.ok(html.includes('section-header-title'));
+    assert.ok(html.includes('Portfolio Guard'));
+    assert.ok(html.includes('1/2 online'));
+    assert.ok(html.includes('Shell Devnet'));
+    assert.ok(html.includes('Aptos Testnet'));
+    assert.ok(html.includes('Balance request timed out'));
     assert.ok(html.includes('Assets'));
     assert.ok(html.includes('portfolio-assets'));
     assert.ok(html.includes('No ERC20 tokens added'));
@@ -360,6 +411,41 @@ describe('popup', async () => {
     assert.ok(html.includes('btn-approval-reject'));
   });
 
+  test('approval view requires explicit confirmation for high-risk requests', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderApprovalRequest } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderApprovalRequest !== 'function') return;
+
+    __setPopupStateForTest({
+      approvalRequest: {
+        id: 'approval-risky',
+        origin: 'https://spender.example',
+        kind: 'send-transaction',
+        createdAt: Date.now(),
+        payload: {
+          account: '0x' + 'a'.repeat(64),
+          to: '0x' + 'b'.repeat(64),
+          value: '0',
+          chainKind: 'shell',
+          chainId: 424242,
+          approvalRisk: {
+            riskLevel: 'high',
+            riskSummary: 'This grants an unlimited token approval.',
+            riskFlags: ['unlimited-token-approval'],
+            displayRows: [{ label: 'Approval spender', value: '0x' + 'b'.repeat(64) }],
+          },
+        },
+      },
+    });
+
+    const html = renderApprovalRequest();
+    assert.ok(html.includes('Risk high'));
+    assert.ok(html.includes('risk-confirmation'));
+    assert.ok(html.includes('approval-risk-confirm'));
+    assert.ok(html.includes('btn-approval-approve" class="btn-primary" disabled'));
+    assert.ok(html.includes('Approve risky request'));
+  });
+
   test('settings view groups Network, Security, Connected dApps, WalletConnect, and Danger Zone', async () => {
     const mod = await import('../dist/popup.js');
     const { __setPopupStateForTest, renderSettings } = mod;
@@ -395,6 +481,43 @@ describe('popup', async () => {
         lastUsedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
       }],
+      dappSessions: [{
+        id: 'connected-site:https://dapp.example',
+        kind: 'connected-site',
+        origin: 'https://dapp.example',
+        protocol: 'EIP-1193',
+        accounts: ['0x' + 'a'.repeat(64)],
+        chains: ['Chain 424242'],
+        methods: ['eth_accounts', 'eth_sendTransaction'],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: null,
+        riskFlags: ['can request transactions'],
+      }, {
+        id: 'walletconnect:wc-topic',
+        kind: 'walletconnect',
+        origin: 'https://wc.example',
+        protocol: 'WalletConnect',
+        accounts: ['eip155:424242:0x' + 'a'.repeat(64)],
+        chains: ['Chain 424242'],
+        methods: ['eth_chainId', 'eth_sendTransaction'],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        riskFlags: ['can request signing'],
+      }, {
+        id: 'tonconnect:ton-client',
+        kind: 'tonconnect',
+        origin: 'https://ton.example',
+        protocol: 'TonConnect',
+        accounts: ['EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c'],
+        chains: ['mainnet / Chain 607'],
+        methods: ['SendTransaction'],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        riskFlags: ['can request signing'],
+      }],
       walletConnectPairings: [],
       walletConnectRelayStatus: { initialized: false, projectIdConfigured: false, relayUrl: '', lastError: null },
       walletConnectProjectId: '',
@@ -412,6 +535,9 @@ describe('popup', async () => {
     assert.ok(html.includes('https://dapp.example'));
     assert.ok(html.includes('https://wc.example'));
     assert.ok(html.includes('https://ton.example'));
+    assert.ok(html.includes('EIP-1193'));
+    assert.ok(html.includes('btn-dapp-session-revoke'));
+    assert.ok(html.includes('can request signing'));
     assert.ok(html.includes('btn-disconnect-all-sites'));
     assert.ok(html.includes('Reset deletes local wallet data'));
   });

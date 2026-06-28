@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Portfolio Guard home snapshot with bounded multi-chain native balance reads, RPC provenance labels, watched-token counts, and isolated unavailable network states.
+- Unified Connect Center snapshot and revocation API for EIP-1193 connected sites, WalletConnect sessions, and TonConnect sessions.
+- High/critical approval requests now require an explicit risk confirmation checkbox before the approve button is enabled.
+
+### Changed
+- Settings now renders connected dApps through a unified session view with protocol, account, chain, method, expiry, and risk flag details.
+
 ## [0.22.0] — 2026-05-06
 
 ### Added
