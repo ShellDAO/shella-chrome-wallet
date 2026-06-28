@@ -188,6 +188,10 @@ import type {
   CosmosStakingPosition,
   CosmosValidatorSummary,
   PortfolioAsset,
+  PortfolioNetworkAsset,
+  PortfolioSnapshot,
+  DappSessionsSnapshot,
+  UnifiedDappSession,
 } from './types.js';
 
 const AUTO_LOCK_ALARM = 'shella-auto-lock';
@@ -197,6 +201,7 @@ const APPROVAL_TTL_MS = 10 * 60 * 1000;
 const TON_PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const TONCONNECT_DAPP_METHODS = ['tonconnect_connect', 'tonconnect_restoreConnection', 'tonconnect_send'];
 const APTOS_DAPP_METHODS = ['aptos_connect', 'aptos_account', 'aptos_network', 'aptos_getBalance', 'aptos_signAndSubmitTransaction'];
+const PORTFOLIO_BALANCE_TIMEOUT_MS = 2500;
 
 let currentSigner: ShellSigner | null = null;
 let currentTronPrivateKey: Uint8Array | null = null;
@@ -747,6 +752,8 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return { locked: currentSigner === null };
     case 'GET_WALLET_SNAPSHOT':
       return getWalletSnapshot();
+    case 'GET_PORTFOLIO_SNAPSHOT':
+      return getPortfolioSnapshot();
     case 'GET_ACCOUNTS':
       return { accounts: await getAccounts() };
     case 'GET_BALANCE':
@@ -811,6 +818,10 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       const network = msg.network ? validateNetwork(msg.network) : await getNetwork();
       return { methods: getAllowedDappMethodsForNetwork(network) };
     }
+    case 'GET_DAPP_SESSIONS_SNAPSHOT':
+      return getDappSessionsSnapshot();
+    case 'REVOKE_DAPP_SESSION':
+      return revokeDappSession(requireString(msg.sessionId, 'sessionId'));
     case 'PREVIEW_APTOS_DAPP_PAYLOAD':
       return previewAptosDappPayload(msg.payload);
     case 'CREATE_WALLETCONNECT_SESSION':
@@ -1517,6 +1528,249 @@ function getSnapshotAccountMeta(account: StoredAccount): Pick<WalletSnapshot, 'a
     activeAccountId: getAccountId(account),
     activeMultichainAccount: account,
   };
+}
+
+async function getPortfolioSnapshot(): Promise<PortfolioSnapshot> {
+  const wallet = await getWalletState();
+  const activeAccount = await getActiveAccount();
+  const account = activeAccount ?? wallet.accounts[0] ?? null;
+  if (!account) {
+    return {
+      accountId: null,
+      generatedAt: Date.now(),
+      networks: [],
+    };
+  }
+
+  const networks = getPortfolioNetworks(wallet);
+  const items = await Promise.all(networks.map((network) => buildPortfolioNetworkAsset(wallet, account, network)));
+  return {
+    accountId: getAccountId(account),
+    generatedAt: Date.now(),
+    networks: items,
+  };
+}
+
+function getPortfolioNetworks(wallet: WalletSnapshot['wallet']): Network[] {
+  const byKey = new Map<string, Network>();
+  const add = (network: Network): void => {
+    byKey.set(`${getChainKind(network)}:${network.chainId}:${network.rpcUrl}`, network);
+  };
+  add(wallet.network);
+  for (const token of wallet.watchedTokens) {
+    if (token.hidden === true) continue;
+    const tokenNetwork = Object.values(KNOWN_NETWORKS).find((network) =>
+      getChainKind(network) === token.chainKind && network.chainId === token.chainId,
+    );
+    if (tokenNetwork) add(tokenNetwork);
+  }
+  return [...byKey.values()];
+}
+
+async function buildPortfolioNetworkAsset(
+  wallet: WalletSnapshot['wallet'],
+  account: StoredAccount,
+  network: Network,
+): Promise<PortfolioNetworkAsset> {
+  const chainKind = getChainKind(network);
+  const address = getAccountAddressForNetwork(account, network);
+  const watchedTokenCount = wallet.watchedTokens.filter((token) =>
+    token.chainKind === chainKind &&
+    token.chainId === network.chainId &&
+    token.hidden !== true,
+  ).length;
+  if (!address) {
+    return {
+      chainKind,
+      chainId: network.chainId,
+      networkName: network.name,
+      rpcProvenance: network.rpcProvenance ?? 'user-custom',
+      address: null,
+      symbol: network.symbol ?? defaultNativeSymbol(chainKind),
+      nativeAsset: null,
+      watchedTokenCount,
+      status: 'unavailable',
+      error: 'Address unavailable',
+      updatedAt: Date.now(),
+    };
+  }
+
+  try {
+    const balance = await withTimeout(getNativeBalanceForNetwork(network, address), PORTFOLIO_BALANCE_TIMEOUT_MS, 'Balance request timed out');
+    const nativeAsset: PortfolioAsset = {
+      chainKind,
+      chainId: network.chainId,
+      networkName: network.name,
+      address,
+      assetType: 'native',
+      symbol: network.symbol ?? defaultNativeSymbol(chainKind),
+      name: network.name,
+      contractAddress: null,
+      rawBalance: balance.balance,
+      formattedBalance: balance.formatted,
+      decimals: getNativeAssetDecimals(network),
+      status: 'ok',
+      error: null,
+    };
+    return {
+      chainKind,
+      chainId: network.chainId,
+      networkName: network.name,
+      rpcProvenance: network.rpcProvenance ?? 'user-custom',
+      address,
+      symbol: nativeAsset.symbol,
+      nativeAsset,
+      watchedTokenCount,
+      status: 'ok',
+      error: null,
+      updatedAt: Date.now(),
+    };
+  } catch (error) {
+    return {
+      chainKind,
+      chainId: network.chainId,
+      networkName: network.name,
+      rpcProvenance: network.rpcProvenance ?? 'user-custom',
+      address,
+      symbol: network.symbol ?? defaultNativeSymbol(chainKind),
+      nativeAsset: buildUnavailableNativePortfolioAsset(network, address, toSafeErrorMessage(error)),
+      watchedTokenCount,
+      status: 'unavailable',
+      error: toSafeErrorMessage(error),
+      updatedAt: Date.now(),
+    };
+  }
+}
+
+async function getNativeBalanceForNetwork(network: Network, address: string): Promise<{ balance: string; formatted: string }> {
+  const nativeAdapter = getNativeChainAdapter(getChainKind(network));
+  if (nativeAdapter) return nativeAdapter.getBalance(network, address);
+  const provider = buildProvider(network);
+  const balance = await provider.client.getBalance({ address: asPqAddress(address, 'getBalance') });
+  return { balance: balance.toString(), formatted: formatEther(balance) };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function defaultNativeSymbol(chainKind: ChainKind): string {
+  return chainKind === 'shell' || chainKind === 'evm' ? 'SHELL' : chainKind.toUpperCase();
+}
+
+async function getDappSessionsSnapshot(): Promise<DappSessionsSnapshot> {
+  const [sites, walletConnectSessions, tonConnectSessions] = await Promise.all([
+    getConnectedSites(),
+    getWalletConnectSessions(),
+    getTonConnectSessions(),
+  ]);
+  return {
+    generatedAt: Date.now(),
+    sessions: [
+      ...sites.map(mapConnectedSiteSession),
+      ...walletConnectSessions.map(mapWalletConnectSession),
+      ...tonConnectSessions.map(mapTonConnectSession),
+    ].sort((left, right) => right.lastUsedAt - left.lastUsedAt),
+  };
+}
+
+function mapConnectedSiteSession(site: ConnectedSitePermission): UnifiedDappSession {
+  return {
+    id: `connected-site:${site.origin}`,
+    kind: 'connected-site',
+    origin: site.origin,
+    protocol: 'EIP-1193',
+    accounts: site.accounts,
+    chains: [`Chain ${site.chainId}`],
+    methods: ['eth_accounts', 'eth_chainId', 'eth_sendTransaction', 'personal_sign', 'eth_signTypedData_v4'],
+    grantedAt: site.grantedAt,
+    lastUsedAt: site.lastUsedAt,
+    expiresAt: null,
+    riskFlags: ['can request transactions', 'can request signatures'],
+  };
+}
+
+function mapWalletConnectSession(session: WalletConnectSession): UnifiedDappSession {
+  return {
+    id: `walletconnect:${session.topic}`,
+    kind: 'walletconnect',
+    origin: session.origin,
+    protocol: 'WalletConnect',
+    accounts: session.accounts,
+    chains: session.chainIds.map((chainId) => `Chain ${chainId}`),
+    methods: session.methods,
+    grantedAt: session.grantedAt,
+    lastUsedAt: session.lastUsedAt,
+    expiresAt: session.expiresAt,
+    riskFlags: getDappMethodRiskFlags(session.methods, session.expiresAt),
+  };
+}
+
+function mapTonConnectSession(session: TonConnectSession): UnifiedDappSession {
+  const methods = session.features.map((feature) => feature.name);
+  return {
+    id: `tonconnect:${session.clientId}`,
+    kind: 'tonconnect',
+    origin: session.origin,
+    protocol: 'TonConnect',
+    accounts: [session.account],
+    chains: [`${session.network} / Chain ${session.chainId}`],
+    methods,
+    grantedAt: session.grantedAt,
+    lastUsedAt: session.lastUsedAt,
+    expiresAt: session.expiresAt,
+    riskFlags: getDappMethodRiskFlags(methods, session.expiresAt),
+  };
+}
+
+function getDappMethodRiskFlags(methods: string[], expiresAt: number | null): string[] {
+  const flags = new Set<string>();
+  for (const method of methods) {
+    if (/send|transaction|sign|typed|amino|direct|proof/i.test(method)) flags.add('can request signing');
+    if (/unknown|custom/i.test(method)) flags.add('contains custom methods');
+  }
+  if (expiresAt && expiresAt - Date.now() > 30 * 24 * 60 * 60 * 1000) flags.add('long-lived session');
+  return [...flags];
+}
+
+async function revokeDappSession(sessionId: string): Promise<{ ok: true }> {
+  const [kind, rawId] = splitDappSessionId(sessionId);
+  if (kind === 'connected-site') {
+    await removeConnectedSite(rawId);
+    return { ok: true };
+  }
+  if (kind === 'walletconnect') {
+    await removeWalletConnectSession(rawId);
+    return { ok: true };
+  }
+  if (kind === 'tonconnect') {
+    await removeTonConnectSession(rawId);
+    return { ok: true };
+  }
+  throw new Error('Unsupported dApp session kind');
+}
+
+function splitDappSessionId(sessionId: string): [UnifiedDappSession['kind'], string] {
+  const separator = sessionId.indexOf(':');
+  if (separator <= 0) throw new Error('Invalid dApp session id');
+  const kind = sessionId.slice(0, separator);
+  const rawId = sessionId.slice(separator + 1);
+  if ((kind === 'connected-site' || kind === 'walletconnect' || kind === 'tonconnect') && rawId) {
+    return [kind, rawId];
+  }
+  throw new Error('Invalid dApp session id');
 }
 
 async function buildPortfolioAssets(input: {

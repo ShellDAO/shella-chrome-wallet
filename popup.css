@@ -871,6 +871,126 @@ textarea {
   font-weight: 500;
 }
 
+.portfolio-guard {
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.78), rgba(15, 23, 42, 0.72));
+}
+
+.portfolio-network-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.portfolio-network {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.portfolio-network:first-child {
+  border-top: 0;
+}
+
+.portfolio-network-warning {
+  color: var(--text-muted);
+}
+
+.portfolio-network-main,
+.portfolio-network-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.portfolio-network-name {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-network-meta,
+.portfolio-network-error {
+  color: var(--text-subtle);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-network-error {
+  color: #fca5a5;
+}
+
+.portfolio-network-balance {
+  align-items: flex-end;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.portfolio-network-balance span:last-child {
+  color: var(--text-subtle);
+  font-size: 10px;
+}
+
+.portfolio-status {
+  min-width: 54px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 800;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.portfolio-status-ok {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.portfolio-status-stale {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.portfolio-status-risk {
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.16);
+}
+
+.site-risk {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: var(--radius-sm);
+  padding: 2px 5px;
+}
+
+.risk-confirmation {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius);
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.risk-confirmation input {
+  margin: 2px 0 0;
+}
+
 .btn-token-send {
   width: auto;
   padding: 6px 9px;

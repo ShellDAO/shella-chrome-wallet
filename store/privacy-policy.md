@@ -1,6 +1,6 @@
 # Shella Wallet — Privacy Policy
 
-**Last updated: 2025-01-01**
+**Last updated: 2026-06-28**
 
 ## Overview
 
@@ -23,10 +23,14 @@ All wallet data is stored **locally on your device** using Chrome's `chrome.stor
 - **Session state**: Whether your wallet is unlocked is stored in `chrome.storage.session`, which is cleared when the browser session ends.
 - **Network settings**: Your selected network configuration is stored locally.
 - **Transaction queue**: Pending transaction records are stored locally for status tracking.
+- **Portfolio state**: Portfolio Guard reads balances for your active network and networks where you explicitly added watched tokens, then displays the result locally. It does not upload or sell portfolio data.
+- **dApp session metadata**: Connected-site grants, WalletConnect sessions, TonConnect sessions, allowed methods, expiry times, and last-used timestamps are stored locally so you can review and revoke permissions.
 
 ## Network Requests
 
-The Extension makes network requests **only** to the RPC endpoint you configure (default: Shell Chain nodes). These requests are standard JSON-RPC calls required for blockchain interaction (balance queries, transaction submission). No personal data is included in these requests beyond your public wallet address.
+The Extension makes network requests to the RPC endpoints you configure or select from built-in network presets. These requests are standard blockchain RPC calls required for wallet interaction, including balance queries, transaction submission, transaction status checks, and Portfolio Guard native-balance summaries for active or explicitly watched networks. No personal data is included in these requests beyond public wallet addresses and public transaction data.
+
+The Extension does not use analytics, advertising networks, or hosted portfolio indexing services.
 
 ## Private Keys
 
@@ -38,7 +42,7 @@ Your private key is:
 
 ## Third-Party Services
 
-Shella Wallet does not integrate any third-party services, advertising networks, or analytics platforms.
+Some built-in non-Shell network presets use public third-party blockchain RPC endpoints. These endpoints receive normal public blockchain requests for the selected network, such as balance reads for your public address. Shella Wallet does not integrate advertising networks or analytics platforms.
 
 ## Open Source
 
