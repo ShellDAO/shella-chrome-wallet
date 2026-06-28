@@ -5,8 +5,10 @@
 
 import type {
   ChainKind,
+  ChainAddressKey,
   BitcoinUtxoPreference,
   ConnectedSitePermission,
+  MultichainAddress,
   Network,
   PendingKeyRotation,
   SessionState,
@@ -45,6 +47,7 @@ export const KNOWN_NETWORKS: Record<string, Network> = {
 };
 
 const DEFAULT_NETWORK = KNOWN_NETWORKS.devnet;
+const ACCOUNT_MODEL_VERSION = 2;
 const DEFAULT_WALLETCONNECT_CONFIG: WalletConnectConfig = { projectId: '', relayUrl: '' };
 const CHAIN_KINDS = new Set<ChainKind>(['shell', 'evm', 'tron', 'solana', 'bitcoin', 'cosmos', 'ton', 'aptos']);
 const RPC_PROVENANCE = new Set<NonNullable<Network['rpcProvenance']>>(['owned', 'official-public', 'third-party-public', 'user-custom']);
@@ -85,18 +88,22 @@ function normalizeNetwork(value: unknown): Network {
   return normalized;
 }
 
-function normalizeConnectedSites(value: unknown): { sites: ConnectedSitePermission[]; migrated: boolean } {
+function normalizeConnectedSites(
+  value: unknown,
+  accounts: StoredAccount[] = [],
+): { sites: ConnectedSitePermission[]; migrated: boolean } {
   if (!Array.isArray(value)) return { sites: [], migrated: false };
 
   let migrated = false;
 
-  const sites = value.flatMap((entry) => {
+  const sites = value.flatMap<ConnectedSitePermission>((entry) => {
     if (typeof entry === 'string') {
       const now = Date.now();
       migrated = true;
       return [{
         origin: entry,
         accounts: [],
+        accountIds: [],
         chainId: DEFAULT_NETWORK.chainId,
         grantedAt: now,
         lastUsedAt: now,
@@ -108,16 +115,24 @@ function normalizeConnectedSites(value: unknown): { sites: ConnectedSitePermissi
     if (typeof candidate.origin !== 'string') return [];
     const hasMissingFields =
       !Array.isArray(candidate.accounts) ||
+      !Array.isArray(candidate.accountIds) ||
       typeof candidate.chainId !== 'number' ||
       typeof candidate.grantedAt !== 'number' ||
       typeof candidate.lastUsedAt !== 'number';
     if (hasMissingFields) migrated = true;
 
+    const normalizedAccounts = Array.isArray(candidate.accounts)
+      ? candidate.accounts.filter((item): item is string => typeof item === 'string' && isStoredConnectedAccount(item))
+      : [];
+    const accountIds = Array.isArray(candidate.accountIds)
+      ? candidate.accountIds.filter((item): item is string => typeof item === 'string' && item.length > 0)
+      : inferAccountIdsForConnectedAccounts(normalizedAccounts, accounts);
+    if (!Array.isArray(candidate.accountIds) && accountIds.length > 0) migrated = true;
+
     return [{
       origin: candidate.origin,
-      accounts: Array.isArray(candidate.accounts)
-        ? candidate.accounts.filter((item): item is string => typeof item === 'string' && isStoredConnectedAccount(item))
-        : [],
+      accounts: normalizedAccounts,
+      accountIds,
       chainId: typeof candidate.chainId === 'number' ? candidate.chainId : DEFAULT_NETWORK.chainId,
       grantedAt: typeof candidate.grantedAt === 'number' ? candidate.grantedAt : Date.now(),
       lastUsedAt: typeof candidate.lastUsedAt === 'number' ? candidate.lastUsedAt : Date.now(),
@@ -133,6 +148,93 @@ function isStoredConnectedAccount(value: string): boolean {
     /^(bc1|tb1)[ac-hj-np-z02-9]{11,87}$/i.test(value) ||
     /^[a-z][a-z0-9]{1,15}1[ac-hj-np-z02-9]{38}$/.test(value) ||
     /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+function inferAccountIdsForConnectedAccounts(connectedAccounts: string[], accounts: StoredAccount[]): string[] {
+  const accountIds = new Set<string>();
+  for (const connectedAccount of connectedAccounts) {
+    const lower = connectedAccount.toLowerCase();
+    const account = accounts.find((candidate) =>
+      candidate.pqAddress.toLowerCase() === lower ||
+      Object.values(candidate.chainAddresses ?? {}).some((address) => typeof address === 'string' && address.toLowerCase() === lower) ||
+      (candidate.addresses ?? []).some((entry) => entry.address.toLowerCase() === lower),
+    );
+    if (account) accountIds.add(getAccountId(account));
+  }
+  return [...accountIds];
+}
+
+export function getAccountId(account: StoredAccount): string {
+  if (typeof account.accountId === 'string' && account.accountId.length > 0) return account.accountId;
+  return account.derivationIndex != null ? `hd:${account.derivationIndex}` : `imported:${account.pqAddress}`;
+}
+
+export function normalizeStoredAccount(account: StoredAccount, index = 0): StoredAccount {
+  const accountId = getAccountId(account);
+  const sourceKind = account.sourceKind ?? (account.derivationIndex != null ? 'hd' : 'imported-keystore');
+  const primaryAddress = account.pqAddress;
+  return {
+    ...account,
+    accountId,
+    displayName: account.displayName ?? `Account ${index + 1}`,
+    sourceKind,
+    primaryAddress,
+    addresses: normalizeMultichainAddresses(account),
+  };
+}
+
+function normalizeMultichainAddresses(account: StoredAccount): MultichainAddress[] {
+  const byKey = new Map<ChainAddressKey, MultichainAddress>();
+  const add = (entry: MultichainAddress): void => {
+    if (entry.isShellAuthority && entry.address !== account.pqAddress) return;
+    byKey.set(entry.addressKey, entry);
+  };
+  add({
+    addressKey: 'shell',
+    chainKind: 'shell',
+    address: account.pqAddress,
+    derivationPath: account.derivationIndex != null ? `m/9000'/8888'/1'/${account.derivationIndex}'/0'/0'` : null,
+    publicKey: null,
+    signatureScheme: 'ml-dsa-65',
+    isShellAuthority: true,
+  });
+  for (const entry of account.addresses ?? []) {
+    add({
+      addressKey: entry.addressKey,
+      chainKind: entry.chainKind,
+      address: entry.address,
+      derivationPath: entry.derivationPath ?? null,
+      publicKey: entry.publicKey ?? null,
+      signatureScheme: entry.addressKey === 'shell' ? 'ml-dsa-65' : entry.signatureScheme,
+      isShellAuthority: entry.addressKey === 'shell' && entry.address === account.pqAddress,
+    });
+  }
+  for (const [addressKey, address] of Object.entries(account.chainAddresses ?? {}) as Array<[ChainAddressKey, string]>) {
+    if (!address) continue;
+    add({
+      addressKey,
+      chainKind: addressKey === 'bitcoinTestnet' ? 'bitcoin' : addressKey,
+      address,
+      derivationPath: account.derivationIndex != null ? deriveAddressPath(addressKey, account.derivationIndex) : null,
+      publicKey: null,
+      signatureScheme: signatureSchemeForAddressKey(addressKey),
+      isShellAuthority: addressKey === 'shell' && address === account.pqAddress,
+    });
+  }
+  return [...byKey.values()];
+}
+
+function deriveAddressPath(addressKey: ChainAddressKey, index: number): string {
+  const purpose = addressKey === 'bitcoin' || addressKey === 'bitcoinTestnet' ? 84 : addressKey === 'tron' ? 195 : addressKey === 'solana' ? 501 : addressKey === 'cosmos' ? 118 : addressKey === 'ton' ? 607 : addressKey === 'aptos' ? 637 : 9000;
+  return `m/${purpose}'/${index}'/0'`;
+}
+
+function signatureSchemeForAddressKey(addressKey: ChainAddressKey): MultichainAddress['signatureScheme'] {
+  if (addressKey === 'shell' || addressKey === 'evm') return 'ml-dsa-65';
+  if (addressKey === 'tron') return 'tron-secp256k1';
+  if (addressKey === 'bitcoin' || addressKey === 'bitcoinTestnet') return 'bitcoin-schnorr-or-ecdsa';
+  if (addressKey === 'solana' || addressKey === 'aptos' || addressKey === 'ton') return 'ed25519';
+  return 'secp256k1';
 }
 
 function normalizeWatchedTokens(value: unknown): { tokens: WatchedToken[]; migrated: boolean } {
@@ -172,6 +274,7 @@ function normalizeWatchedTokens(value: unknown): { tokens: WatchedToken[]; migra
       symbol: candidate.symbol,
       decimals: candidate.decimals,
       addedAt: typeof candidate.addedAt === 'number' ? candidate.addedAt : Date.now(),
+      ...(candidate.hidden === true ? { hidden: true } : {}),
     }];
   });
   return { tokens, migrated };
@@ -375,6 +478,7 @@ function normalizeBitcoinUtxoPreferences(value: unknown): { preferences: Bitcoin
 
 export async function initStore(): Promise<void> {
   const existing = await chrome.storage.local.get([
+    'accountModelVersion',
     'network',
     'accounts',
     'autoLockMinutes',
@@ -388,7 +492,7 @@ export async function initStore(): Promise<void> {
     'bitcoinUtxoPreferences',
   ]);
   if (!existing.accounts) {
-    const { sites: connectedSites } = normalizeConnectedSites(existing.connectedSites);
+    const { sites: connectedSites } = normalizeConnectedSites(existing.connectedSites, []);
     const { tokens: watchedTokens } = normalizeWatchedTokens(existing.watchedTokens);
     const { sessions: walletConnectSessions } = normalizeWalletConnectSessions(existing.walletConnectSessions);
     const { sessions: tonConnectSessions } = normalizeTonConnectSessions(existing.tonConnectSessions);
@@ -396,6 +500,7 @@ export async function initStore(): Promise<void> {
     const { preferences: bitcoinUtxoPreferences } = normalizeBitcoinUtxoPreferences(existing.bitcoinUtxoPreferences);
     await chrome.storage.local.set({
       network: DEFAULT_NETWORK,
+      accountModelVersion: ACCOUNT_MODEL_VERSION,
       accounts: [],
       autoLockMinutes: 15,
       connectedSites,
@@ -410,7 +515,11 @@ export async function initStore(): Promise<void> {
     return;
   }
 
-  const { sites: connectedSites, migrated } = normalizeConnectedSites(existing.connectedSites);
+  const normalizedAccounts = Array.isArray(existing.accounts)
+    ? existing.accounts.map((account, index) => normalizeStoredAccount(account as StoredAccount, index))
+    : [];
+  const accountsMigrated = JSON.stringify(normalizedAccounts) !== JSON.stringify(existing.accounts);
+  const { sites: connectedSites, migrated } = normalizeConnectedSites(existing.connectedSites, normalizedAccounts);
   const { tokens: watchedTokens, migrated: tokensMigrated } = normalizeWatchedTokens(existing.watchedTokens);
   const { sessions: walletConnectSessions, migrated: walletConnectSessionsMigrated } = normalizeWalletConnectSessions(existing.walletConnectSessions);
   const { sessions: tonConnectSessions, migrated: tonConnectSessionsMigrated } = normalizeTonConnectSessions(existing.tonConnectSessions);
@@ -419,6 +528,8 @@ export async function initStore(): Promise<void> {
 
   if (
     !existing.network ||
+    existing.accountModelVersion !== ACCOUNT_MODEL_VERSION ||
+    accountsMigrated ||
     existing.autoLockMinutes == null ||
     !existing.connectedSites ||
     !existing.walletConnectConfig ||
@@ -443,6 +554,8 @@ export async function initStore(): Promise<void> {
   ) {
     await chrome.storage.local.set({
       network: normalizeNetwork(existing.network),
+      accountModelVersion: ACCOUNT_MODEL_VERSION,
+      accounts: normalizedAccounts,
       autoLockMinutes: existing.autoLockMinutes ?? 15,
       connectedSites,
       walletConnectConfig: normalizeWalletConnectConfig(existing.walletConnectConfig),
@@ -458,6 +571,7 @@ export async function initStore(): Promise<void> {
 
 export async function getWalletState(): Promise<WalletState> {
   const data = await chrome.storage.local.get([
+    'accountModelVersion',
     'network',
     'accounts',
     'autoLockMinutes',
@@ -475,11 +589,13 @@ export async function getWalletState(): Promise<WalletState> {
   const { sessions: tonConnectSessions } = normalizeTonConnectSessions(data.tonConnectSessions);
   const { pairings: walletConnectPairings } = normalizeWalletConnectPairings(data.walletConnectPairings);
   const { preferences: bitcoinUtxoPreferences } = normalizeBitcoinUtxoPreferences(data.bitcoinUtxoPreferences);
+  const accounts = Array.isArray(data.accounts) ? data.accounts.map((account, index) => normalizeStoredAccount(account as StoredAccount, index)) : [];
   return {
+    accountModelVersion: ACCOUNT_MODEL_VERSION,
     network: normalizeNetwork(data.network),
-    accounts: data.accounts ?? [],
+    accounts,
     autoLockMinutes: data.autoLockMinutes ?? 15,
-    connectedSites: normalizeConnectedSites(data.connectedSites).sites,
+    connectedSites: normalizeConnectedSites(data.connectedSites, accounts).sites,
     walletConnectConfig: normalizeWalletConnectConfig(data.walletConnectConfig),
     walletConnectSessions,
     tonConnectSessions,
@@ -492,14 +608,15 @@ export async function getWalletState(): Promise<WalletState> {
 
 export async function getAccounts(): Promise<StoredAccount[]> {
   const { accounts } = await chrome.storage.local.get('accounts');
-  return accounts ?? [];
+  return Array.isArray(accounts) ? accounts.map((account, index) => normalizeStoredAccount(account as StoredAccount, index)) : [];
 }
 
 export async function addAccount(account: StoredAccount): Promise<void> {
   const accounts = await getAccounts();
-  const exists = accounts.some((a) => a.pqAddress === account.pqAddress);
+  const normalized = normalizeStoredAccount(account, accounts.length);
+  const exists = accounts.some((a) => a.pqAddress === normalized.pqAddress || getAccountId(a) === normalized.accountId);
   if (!exists) {
-    accounts.push(account);
+    accounts.push(normalized);
     await chrome.storage.local.set({ accounts });
   }
 }
@@ -609,6 +726,10 @@ export async function removeConnectedSite(origin: string): Promise<void> {
   });
 }
 
+export async function clearConnectedSites(): Promise<void> {
+  await chrome.storage.local.set({ connectedSites: [] });
+}
+
 export async function getWalletConnectSessions(): Promise<WalletConnectSession[]> {
   const { walletConnectSessions } = await chrome.storage.local.get('walletConnectSessions');
   return normalizeWalletConnectSessions(walletConnectSessions).sessions;
@@ -626,6 +747,10 @@ export async function removeWalletConnectSession(topic: string): Promise<void> {
   await chrome.storage.local.set({
     walletConnectSessions: sessions.filter((session) => session.topic !== topic),
   });
+}
+
+export async function clearWalletConnectSessions(): Promise<void> {
+  await chrome.storage.local.set({ walletConnectSessions: [] });
 }
 
 export async function getTonConnectSessions(): Promise<TonConnectSession[]> {
@@ -647,6 +772,10 @@ export async function removeTonConnectSession(clientId: string): Promise<void> {
   await chrome.storage.local.set({
     tonConnectSessions: sessions.filter((session) => session.clientId !== clientId),
   });
+}
+
+export async function clearTonConnectSessions(): Promise<void> {
+  await chrome.storage.local.set({ tonConnectSessions: [] });
 }
 
 export async function getWalletConnectPairings(): Promise<WalletConnectPairing[]> {
@@ -688,6 +817,17 @@ export async function removeWatchedToken(chainKind: ChainKind, chainId: number, 
       !(item.chainKind === chainKind && item.chainId === chainId && item.contractAddress.toLowerCase() === contractAddress.toLowerCase()),
     ),
   });
+}
+
+export async function setWatchedTokenHidden(chainKind: ChainKind, chainId: number, contractAddress: string, hidden: boolean): Promise<void> {
+  const tokens = await getWatchedTokens();
+  const next = tokens.map((item) => {
+    if (item.chainKind !== chainKind || item.chainId !== chainId || item.contractAddress.toLowerCase() !== contractAddress.toLowerCase()) {
+      return item;
+    }
+    return hidden ? { ...item, hidden: true } : { ...item, hidden: undefined };
+  });
+  await chrome.storage.local.set({ watchedTokens: next });
 }
 
 export async function getBitcoinUtxoPreferences(): Promise<BitcoinUtxoPreference[]> {
@@ -737,6 +877,15 @@ export async function getLastActiveAddress(): Promise<string | null> {
 
 export async function setLastActiveAddress(address: string): Promise<void> {
   await chrome.storage.local.set({ lastActiveAddress: address });
+}
+
+export async function getLastActiveAccountId(): Promise<string | null> {
+  const { lastActiveAccountId } = await chrome.storage.local.get('lastActiveAccountId');
+  return typeof lastActiveAccountId === 'string' ? lastActiveAccountId : null;
+}
+
+export async function setLastActiveAccountId(accountId: string): Promise<void> {
+  await chrome.storage.local.set({ lastActiveAccountId: accountId });
 }
 
 // HD wallet store — persists seed + mnemonic keystores and HD account count.

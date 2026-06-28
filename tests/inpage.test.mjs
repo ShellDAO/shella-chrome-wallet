@@ -41,6 +41,14 @@ globalThis.window = {
     if (message.target !== 'shella-contentscript') return;
     const result = message.method === 'solana_connect'
       ? { publicKey: 'So11111111111111111111111111111111111111112' }
+      : message.method === 'eth_requestAccounts'
+        ? ['0x' + 'a'.repeat(64)]
+        : message.method === 'eth_accounts'
+          ? ['0x' + 'a'.repeat(64)]
+          : message.method === 'wallet_requestPermissions'
+            ? [{ parentCapability: 'eth_accounts', caveats: [{ type: 'restrictReturnedAccounts', value: ['0x' + 'a'.repeat(64)] }] }]
+            : message.method === 'wallet_revokePermissions'
+              ? null
       : message.method === 'solana_signAndSendTransaction'
         ? { signature: 'solsig' }
         : message.method === 'tonconnect_connect'
@@ -103,6 +111,24 @@ describe('inpage provider', () => {
       icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iOCIgZmlsbD0iIzFhNmVmNSIvPjxwYXRoIGQ9Ik0xNiA2bDcgNHY1YzAgNS40LTMuNCA5LjktNyAxMS0zLjYtMS4xLTctNS42LTctMTF2LTVsNy00eiIgZmlsbD0id2hpdGUiLz48L3N2Zz4=',
       rdns: 'network.shella.wallet',
     });
+  });
+
+  test('EIP-1193 permissions update accountsChanged state', async () => {
+    const changes = [];
+    globalThis.window.ethereum.on('accountsChanged', (accounts) => changes.push(accounts));
+
+    const requested = await globalThis.window.ethereum.request({
+      method: 'wallet_requestPermissions',
+      params: [{ eth_accounts: {} }],
+    });
+    assert.equal(requested[0].parentCapability, 'eth_accounts');
+    assert.deepEqual(changes.at(-1), ['0x' + 'a'.repeat(64)]);
+
+    await globalThis.window.ethereum.request({
+      method: 'wallet_revokePermissions',
+      params: [{ eth_accounts: {} }],
+    });
+    assert.deepEqual(changes.at(-1), []);
   });
 
   test('registers a Solana Wallet Standard provider without third-party relay', async () => {

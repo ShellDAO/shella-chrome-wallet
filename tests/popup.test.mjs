@@ -176,6 +176,246 @@ describe('popup', async () => {
     assert.equal(formatRpcProvenance({ name: 'Custom', chainId: 1, rpcUrl: 'https://rpc.example', rpcProvenance: 'user-custom' }), 'User custom RPC');
   });
 
+  test('wallet main view renders the upgraded action grid, chain health, and token empty state', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderWallet } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderWallet !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: '0x' + 'a'.repeat(64),
+      balanceFormatted: '1.250000',
+      detectedChainId: null,
+      network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
+      activeAccountId: 'hd:0',
+      accounts: [{
+        accountId: 'hd:0',
+        displayName: 'Account 1',
+        primaryAddress: '0x' + 'a'.repeat(64),
+        pqAddress: '0x' + 'a'.repeat(64),
+        keystoreJson: '{}',
+        addresses: [{
+          addressKey: 'shell',
+          chainKind: 'shell',
+          address: '0x' + 'a'.repeat(64),
+          signatureScheme: 'ml-dsa-65',
+          isShellAuthority: true,
+        }],
+      }],
+      watchedTokens: [{
+        chainKind: 'shell',
+        chainId: 424242,
+        contractAddress: '0x' + 'b'.repeat(20),
+        symbol: 'HIDE',
+        decimals: 18,
+        addedAt: 1,
+        hidden: true,
+      }],
+      tokenBalances: {},
+      portfolioAssets: [
+        {
+          chainKind: 'shell',
+          chainId: 424242,
+          networkName: 'Shell Devnet',
+          address: '0x' + 'a'.repeat(64),
+          assetType: 'native',
+          symbol: 'SHELL',
+          name: 'Shell Devnet',
+          contractAddress: null,
+          rawBalance: '1250000000000000000',
+          formattedBalance: '1.250000',
+          decimals: 18,
+          status: 'ok',
+          error: null,
+        },
+      ],
+      txQueue: [],
+      nodeInfo: null,
+    });
+
+    const html = renderWallet();
+    assert.ok(html.includes('action-grid'));
+    assert.ok(html.includes('Chain health'));
+    assert.ok(html.includes('Chain health needs attention') || html.includes('RPC status pending'));
+    assert.ok(html.includes('section-header-title'));
+    assert.ok(html.includes('Assets'));
+    assert.ok(html.includes('portfolio-assets'));
+    assert.ok(html.includes('No ERC20 tokens added'));
+    assert.ok(html.includes('Hidden ERC20 (1)'));
+    assert.ok(html.includes('btn-token-show'));
+    assert.ok(html.includes('Copy'));
+  });
+
+  test('accounts view renders multichain account identity without replacing Shell PQ root', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderAccounts } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderAccounts !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: '0x' + 'a'.repeat(64),
+      activeAccountId: 'hd:0',
+      network: { name: 'Tron Nile', chainId: 3448148188, rpcUrl: 'https://nile.trongrid.io', kind: 'tron', symbol: 'TRX', rpcProvenance: 'official-public' },
+      accounts: [{
+        accountId: 'hd:0',
+        displayName: 'Trading',
+        primaryAddress: '0x' + 'a'.repeat(64),
+        pqAddress: '0x' + 'a'.repeat(64),
+        keystoreJson: '{}',
+        addresses: [
+          { addressKey: 'shell', chainKind: 'shell', address: '0x' + 'a'.repeat(64), signatureScheme: 'ml-dsa-65', isShellAuthority: true },
+          { addressKey: 'tron', chainKind: 'tron', address: 'TWallet111111111111111111111111111111', signatureScheme: 'tron-secp256k1', isShellAuthority: false },
+        ],
+      }, {
+        accountId: 'hd:1',
+        displayName: 'Vault',
+        primaryAddress: '0x' + 'c'.repeat(64),
+        pqAddress: '0x' + 'c'.repeat(64),
+        keystoreJson: '{}',
+        addresses: [{ addressKey: 'shell', chainKind: 'shell', address: '0x' + 'c'.repeat(64), signatureScheme: 'ml-dsa-65', isShellAuthority: true }],
+      }],
+    });
+
+    const html = renderAccounts();
+    assert.ok(html.includes('Trading'));
+    assert.ok(html.includes('hd:0'));
+    assert.ok(html.includes('Shell/PQ root'));
+    assert.ok(html.includes('PQ authority'));
+    assert.ok(html.includes('Current tron'));
+    assert.ok(html.includes('data-account-id="hd:1"'));
+  });
+
+  test('send view separates Basic, Fees & Advanced, and Chain Preview sections', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderSend } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderSend !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: 'tb1qwallet',
+      sendTo: 'tb1qrecipient',
+      sendValue: '0.01',
+      sendBitcoinFeePreset: 'custom',
+      sendBitcoinFeeRate: '12',
+      sendPreview: {
+        amountSats: '1000000',
+        feeSats: '1200',
+        feeRateSatVb: 12,
+        inputCount: 1,
+        inputs: [{ txid: 'b'.repeat(64), vout: 0, valueSats: '1001200', confirmed: true }],
+        inputTotalSats: '1001200',
+        changeSats: '0',
+        dustSats: '0',
+        estimatedVbytes: 100,
+        rbfEnabled: true,
+      },
+      bitcoinUtxoPreferences: [],
+      sendBitcoinSelectedInputs: ['b'.repeat(64) + ':0'],
+      network: { name: 'Bitcoin Testnet', chainId: 18332, rpcUrl: 'https://blockstream.info/testnet/api', kind: 'bitcoin', symbol: 'BTC', rpcProvenance: 'third-party-public' },
+      detectedChainId: 18332,
+    });
+
+    const html = renderSend();
+    assert.ok(html.includes('data-section="send-basic"'));
+    assert.ok(html.includes('Fees & Advanced'));
+    assert.ok(html.includes('Chain Preview'));
+    assert.ok(html.includes('send-preview-panel'));
+    assert.ok(html.includes('send-fee-rate'));
+    assert.ok(html.includes('btn-preview-send'));
+  });
+
+  test('approval view renders origin, summary, details, and sticky approve controls', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderApprovalRequest } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderApprovalRequest !== 'function') return;
+
+    __setPopupStateForTest({
+      approvalRequest: {
+        id: 'approval-1',
+        origin: 'https://dapp.example',
+        kind: 'send-transaction',
+        createdAt: Date.now(),
+        payload: {
+          account: '0x' + 'a'.repeat(64),
+          to: '0x' + 'b'.repeat(64),
+          value: '1000000000000000000',
+          chainKind: 'shell',
+          chainId: 424242,
+          approvalRisk: {
+            riskLevel: 'medium',
+            riskSummary: 'This transaction includes contract calldata.',
+            riskFlags: ['calldata-present'],
+            displayRows: [{ label: 'Origin', value: 'https://dapp.example' }],
+          },
+        },
+      },
+    });
+
+    const html = renderApprovalRequest();
+    assert.ok(html.includes('approval-hero'));
+    assert.ok(html.includes('https://dapp.example'));
+    assert.ok(html.includes('approval-summary-grid'));
+    assert.ok(html.includes('This transaction includes contract calldata.'));
+    assert.ok(html.includes('Risk medium'));
+    assert.ok(html.includes('approval-details'));
+    assert.ok(html.includes('sticky-actions approval-actions'));
+    assert.ok(html.includes('btn-approval-approve'));
+    assert.ok(html.includes('btn-approval-reject'));
+  });
+
+  test('settings view groups Network, Security, Connected dApps, WalletConnect, and Danger Zone', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderSettings } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderSettings !== 'function') return;
+
+    __setPopupStateForTest({
+      connectedSites: [{
+        origin: 'https://dapp.example',
+        accounts: ['0x' + 'a'.repeat(64)],
+        chainId: 424242,
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+      }],
+      walletConnectSessions: [{
+        topic: 'wc-topic',
+        origin: 'https://wc.example',
+        accounts: ['eip155:424242:0x' + 'a'.repeat(64)],
+        chainIds: [424242],
+        methods: ['eth_chainId'],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      }],
+      tonConnectSessions: [{
+        clientId: 'ton-client',
+        origin: 'https://ton.example',
+        manifestUrl: 'https://ton.example/tonconnect-manifest.json',
+        account: 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c',
+        chainId: 607,
+        network: 'mainnet',
+        features: [{ name: 'SendTransaction', maxMessages: 4 }],
+        grantedAt: Date.now(),
+        lastUsedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      }],
+      walletConnectPairings: [],
+      walletConnectRelayStatus: { initialized: false, projectIdConfigured: false, relayUrl: '', lastError: null },
+      walletConnectProjectId: '',
+      walletConnectRelayUrl: '',
+      walletConnectUri: '',
+      autoLockMinutes: 15,
+    });
+
+    const html = renderSettings();
+    for (const label of ['Network', 'Security', 'Connected dApps', 'WalletConnect', 'Danger Zone']) {
+      assert.ok(html.includes(label), `expected ${label} section`);
+    }
+    assert.ok(html.includes('custom-rpc-panel'));
+    assert.ok(html.includes('Relay not initialized'));
+    assert.ok(html.includes('https://dapp.example'));
+    assert.ok(html.includes('https://wc.example'));
+    assert.ok(html.includes('https://ton.example'));
+    assert.ok(html.includes('btn-disconnect-all-sites'));
+    assert.ok(html.includes('Reset deletes local wallet data'));
+  });
+
   test('renderAptosApprovalPayload shows auditable Aptos signing details', async () => {
     const mod = await import('../dist/popup.js');
     const { renderAptosApprovalPayload } = mod;

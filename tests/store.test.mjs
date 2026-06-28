@@ -74,6 +74,8 @@ const {
   getBitcoinUtxoPreferences,
   upsertBitcoinUtxoPreference,
   upsertBitcoinUtxoPreferences,
+  setWatchedTokenHidden,
+  getAccountId,
 } = await import('../dist/store.js');
 
 describe('store', () => {
@@ -108,6 +110,62 @@ describe('store', () => {
     const accounts = await getAccounts();
     assert.equal(accounts.length, 1);
     assert.equal(accounts[0].pqAddress, 'pq1abc');
+    assert.equal(accounts[0].accountId, 'imported:pq1abc');
+    assert.equal(accounts[0].primaryAddress, 'pq1abc');
+    assert.equal(accounts[0].addresses[0].signatureScheme, 'ml-dsa-65');
+    assert.equal(accounts[0].addresses[0].isShellAuthority, true);
+  });
+
+  test('legacy multichain account migration preserves Shell PQ root and mirrors addresses', async () => {
+    localArea._store.clear();
+    sessionArea._store.clear();
+    const pqAddress = `0x${'aa'.repeat(32)}`;
+    await localArea.set({
+      network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
+      accounts: [{
+        pqAddress,
+        keystoreJson: '{"crypto":"pq"}',
+        derivationIndex: 1,
+        primaryAddress: `0x${'bb'.repeat(32)}`,
+        chainAddresses: {
+          tron: 'TTest1111111111111111111111111111111',
+          solana: 'So11111111111111111111111111111111111111112',
+        },
+      }],
+      connectedSites: [{
+        origin: 'https://dapp.example',
+        accounts: [pqAddress],
+        chainId: 424242,
+        grantedAt: 1,
+        lastUsedAt: 1,
+      }],
+      autoLockMinutes: 15,
+      txQueue: [],
+    });
+
+    await initStore();
+    const state = await getWalletState();
+    const account = state.accounts[0];
+    assert.equal(state.accountModelVersion, 2);
+    assert.equal(account.accountId, 'hd:1');
+    assert.equal(getAccountId(account), 'hd:1');
+    assert.equal(account.primaryAddress, pqAddress, 'primaryAddress must remain the Shell/PQ authority');
+    assert.equal(account.keystoreJson, '{"crypto":"pq"}');
+    assert.equal(account.addresses.find((entry) => entry.addressKey === 'shell').address, pqAddress);
+    assert.equal(account.addresses.find((entry) => entry.addressKey === 'shell').isShellAuthority, true);
+    assert.equal(account.addresses.find((entry) => entry.addressKey === 'tron').signatureScheme, 'tron-secp256k1');
+    assert.equal(account.addresses.find((entry) => entry.addressKey === 'solana').signatureScheme, 'ed25519');
+    assert.deepEqual(state.connectedSites[0].accountIds, ['hd:1']);
+  });
+
+  test('imported keystore migration does not fabricate non-Shell addresses', async () => {
+    const pqAddress = `0x${'cc'.repeat(32)}`;
+    await addAccount({ pqAddress, keystoreJson: '{"imported":true}' });
+    const [account] = await getAccounts();
+    assert.equal(account.accountId, `imported:${pqAddress}`);
+    assert.equal(account.primaryAddress, pqAddress);
+    assert.deepEqual(account.addresses.map((entry) => entry.addressKey), ['shell']);
+    assert.equal(account.addresses[0].signatureScheme, 'ml-dsa-65');
   });
 
   test('replaceAccountKeystore updates an existing account only', async () => {
@@ -348,6 +406,13 @@ describe('store', () => {
 
     const state = await getWalletState();
     assert.equal(state.watchedTokens.length, 1);
+
+    await setWatchedTokenHidden('tron', 2494104990, token.contractAddress, true);
+    tokens = await getWatchedTokens();
+    assert.equal(tokens[0].hidden, true);
+    await setWatchedTokenHidden('tron', 2494104990, token.contractAddress, false);
+    tokens = await getWatchedTokens();
+    assert.equal(tokens[0].hidden, undefined);
 
     await removeWatchedToken('tron', 2494104990, token.contractAddress);
     tokens = await getWatchedTokens();

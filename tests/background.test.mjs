@@ -1309,6 +1309,10 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
   const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
   assert.equal(snapshot.locked, false);
   assert.equal(snapshot.primaryAccount.pqAddress, created.pqAddress);
+  assert.equal(snapshot.activeAccountId, `imported:${created.pqAddress}`);
+  assert.equal(snapshot.activeMultichainAccount.primaryAddress, created.pqAddress);
+  assert.equal(snapshot.activeMultichainAccount.addresses.find((entry) => entry.addressKey === 'shell').signatureScheme, 'ml-dsa-65');
+  assert.equal(snapshot.activeMultichainAccount.addresses.find((entry) => entry.addressKey === 'shell').isShellAuthority, true);
   assert.equal(snapshot.balance.raw, '1000000000000000000');
   assert.equal(snapshot.nonce, 0);
   assert.equal(snapshot.detectedChainId, 424242);
@@ -1593,6 +1597,14 @@ test('dapp provider grants site access and proxies read methods', async () => {
   });
   assert.equal(chainId, '0x67932');
 
+  const netVersion = await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://app.shell.org',
+    method: 'net_version',
+    params: [],
+  });
+  assert.equal(netVersion, '424242');
+
   const blockNumber = await handleMessage({
     type: 'DAPP_REQUEST',
     origin: 'https://app.shell.org',
@@ -1617,6 +1629,128 @@ test('dapp provider grants site access and proxies read methods', async () => {
     params: [],
   });
   assert.deepEqual(noAccounts, []);
+});
+
+test('dapp provider supports permissions, revocation, and Shell message signing approvals', async () => {
+  txCounter = 0;
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  const approvalsBeforeRequest = createdWindows.length;
+  const permissionsPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'wallet_requestPermissions',
+    params: [{ eth_accounts: {} }],
+  });
+  const connectRequest = await resolveLatestApproval(true, approvalsBeforeRequest);
+  assert.equal(connectRequest.payload.approvalRisk.riskLevel, 'low');
+  const permissions = await permissionsPromise;
+  assert.equal(permissions[0].parentCapability, 'eth_accounts');
+  assert.deepEqual(permissions[0].caveats[0].value, [created.pqAddress]);
+
+  const currentPermissions = await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'wallet_getPermissions',
+    params: [],
+  });
+  assert.deepEqual(currentPermissions[0].caveats[0].value, [created.pqAddress]);
+  const permissionSnapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+  const connected = permissionSnapshot.wallet.connectedSites.find((site) => site.origin === 'https://sign.example.com');
+  assert.deepEqual(connected.accountIds, [`imported:${created.pqAddress}`]);
+  assert.deepEqual(connected.accounts, [created.pqAddress], 'provider-facing accounts must remain Shell/PQ addresses');
+
+  const approvalsBeforeSign = createdWindows.length;
+  const signPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'personal_sign',
+    params: ['Shell login challenge', created.pqAddress],
+  });
+  const signRequest = await resolveLatestApproval(true, approvalsBeforeSign);
+  assert.equal(signRequest.kind, 'sign-message');
+  assert.equal(signRequest.payload.approvalRisk.riskLevel, 'medium');
+  assert.match(await signPromise, /^0x[0-9a-f]+$/);
+
+  const approvalsBeforeTyped = createdWindows.length;
+  const typedPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'eth_signTypedData_v4',
+    params: [created.pqAddress, JSON.stringify({
+      domain: { name: 'Shell dApp', chainId: 424242, verifyingContract: '0x' + '12'.repeat(32) },
+      primaryType: 'Permit',
+      types: { Permit: [{ name: 'spender', type: 'address' }] },
+      message: { spender: '0x' + '34'.repeat(32) },
+    })],
+  });
+  const typedRequest = await resolveLatestApproval(true, approvalsBeforeTyped);
+  assert.equal(typedRequest.kind, 'sign-typed-data');
+  assert.equal(typedRequest.payload.typedDataSummary.primaryType, 'Permit');
+  assert.match(await typedPromise, /^0x[0-9a-f]+$/);
+
+  await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'wallet_revokePermissions',
+    params: [{ eth_accounts: {} }],
+  });
+  const accountsAfterRevoke = await handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sign.example.com',
+    method: 'eth_accounts',
+    params: [],
+  });
+  assert.deepEqual(accountsAfterRevoke, []);
+});
+
+test('disconnect all clears dApp, WalletConnect, and TonConnect sessions without deleting wallet data', async () => {
+  const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
+  const password = 'hdwallet-test-password!';
+  await handleMessage({ type: 'RESET_WALLET' });
+  const created = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic, password });
+  await handleMessage({ type: 'ADD_CONNECTED_SITE', origin: 'https://dapp.example' });
+  await handleMessage({
+    type: 'CREATE_WALLETCONNECT_SESSION',
+    topic: 'wc-disconnect-all',
+    origin: 'https://wc-disconnect.example',
+    chainIds: [424242],
+    methods: ['eth_chainId'],
+    expirySeconds: 60,
+  });
+  await handleMessage({
+    type: 'SET_NETWORK',
+    network: {
+      name: 'TON Mainnet',
+      chainId: 607,
+      rpcUrl: 'https://toncenter.com/api/v2',
+      kind: 'ton',
+      symbol: 'TON',
+    },
+  });
+  await handleMessage({
+    type: 'CREATE_TONCONNECT_SESSION',
+    clientId: 'ton-disconnect-all',
+    origin: 'https://ton-disconnect.example',
+    manifestUrl: 'https://ton-disconnect.example/tonconnect-manifest.json',
+    features: [{ name: 'SendTransaction', maxMessages: 4 }],
+    expirySeconds: 60,
+  });
+
+  assert.equal((await handleMessage({ type: 'GET_CONNECTED_SITES' })).sites.length > 0, true);
+  assert.equal((await handleMessage({ type: 'GET_WALLETCONNECT_SESSIONS' })).sessions.length, 1);
+  assert.equal((await handleMessage({ type: 'GET_TONCONNECT_SESSIONS' })).sessions.length, 1);
+
+  await handleMessage({ type: 'DISCONNECT_ALL_SITES' });
+
+  assert.deepEqual((await handleMessage({ type: 'GET_CONNECTED_SITES' })).sites, []);
+  assert.deepEqual((await handleMessage({ type: 'GET_WALLETCONNECT_SESSIONS' })).sessions, []);
+  assert.deepEqual((await handleMessage({ type: 'GET_TONCONNECT_SESSIONS' })).sessions, []);
+  const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+  assert.equal(snapshot.wallet.accounts.length, 1);
+  assert.equal(snapshot.wallet.accounts[0].pqAddress, created.pqAddress);
 });
 
 test('walletconnect sessions enforce chain, method, and expiry allowlists', async () => {
@@ -2087,6 +2221,18 @@ test('Shell ERC20 info, balance, and transfer are supported through token provid
   assert.equal(snapshotWithToken.wallet.watchedTokens[0].contractAddress, tokenAddress);
   assert.equal(snapshotWithToken.wallet.watchedTokens[0].symbol, 'SHELLUSD');
   assert.equal(snapshotWithToken.wallet.watchedTokens[0].decimals, 18);
+  assert.ok(snapshotWithToken.portfolioAssets.some((asset) =>
+    asset.assetType === 'native' &&
+    asset.chainKind === 'shell' &&
+    asset.symbol === 'SHELL' &&
+    asset.status === 'ok',
+  ));
+  assert.ok(snapshotWithToken.portfolioAssets.some((asset) =>
+    asset.assetType === 'token' &&
+    asset.contractAddress === tokenAddress &&
+    asset.symbol === 'SHELLUSD' &&
+    asset.formattedBalance === '1.234567890123456789',
+  ));
 
   const info = await handleMessage({ type: 'GET_ERC20_TOKEN_INFO', contractAddress: tokenAddress });
   assert.deepEqual(info, { contractAddress: tokenAddress, decimals: 18, symbol: 'SHELLUSD' });
@@ -2124,6 +2270,17 @@ test('Shell ERC20 info, balance, and transfer are supported through token provid
   assert.equal(history.txs[0].value, '1500000000000000000');
   assert.equal(history.txs[0].to, created.pqAddress);
   assert.match(history.txs[0].data, new RegExp(`^0xa9059cbb${created.pqAddress.slice(2)}`));
+
+  const revoke = await handleMessage({
+    type: 'REVOKE_ERC20_APPROVAL',
+    tokenContract: tokenAddress,
+    spender: created.pqAddress,
+  });
+  assert.match(revoke.txHash, /^0x[0-9a-f]{64}$/);
+  const revokeHistory = await handleMessage({ type: 'GET_TX_HISTORY', address: created.pqAddress, page: 0 });
+  assert.equal(revokeHistory.txs[0].to, tokenAddress);
+  assert.match(revokeHistory.txs[0].data, /^0x095ea7b3/);
+  assert.equal(revokeHistory.txs[0].data.endsWith('0'.repeat(64)), true);
 });
 
 test('Shell dApp provider can submit ERC20 transfers through token provider registry', async () => {
@@ -2165,6 +2322,25 @@ test('Shell dApp provider can submit ERC20 transfers through token provider regi
   assert.equal(history.txs[0].shellType, 'erc20Transfer');
   assert.equal(history.txs[0].tokenContract, tokenAddress);
   assert.equal(history.txs[0].value, '2000000000000000000');
+
+  const unlimitedApprovalData = `0x095ea7b3${created.pqAddress.slice(2)}${'f'.repeat(64)}`;
+  const approvalsBeforeApproval = createdWindows.length;
+  const approvalPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://tokens.example.com',
+    method: 'eth_sendTransaction',
+    params: [{
+      from: created.pqAddress,
+      to: tokenAddress,
+      value: '0x0',
+      data: unlimitedApprovalData,
+    }],
+  });
+  const approvalRequest = await resolveLatestApproval(false, approvalsBeforeApproval);
+  assert.equal(approvalRequest.payload.approvalRisk.riskLevel, 'high');
+  assert.ok(approvalRequest.payload.approvalRisk.riskFlags.includes('unlimited-token-approval'));
+  assert.ok(approvalRequest.payload.approvalRisk.displayRows.some((row) => row.label === 'Approval spender'));
+  await assert.rejects(approvalPromise, /Request rejected by user/);
 });
 
 test('Shell dApp permissions are bound to the currently active account after account switch', async () => {
@@ -2451,10 +2627,31 @@ describe('multi-account', () => {
     const switched = await handleMessage({ type: 'SWITCH_ACCOUNT', password: PASSWORD2, address: second.pqAddress });
     assert.ok(switched.ok, 'SWITCH_ACCOUNT must return ok: true');
     assert.equal(switched.pqAddress, second.pqAddress, 'SWITCH_ACCOUNT must return the new address');
+    assert.equal(switched.accountId, `imported:${second.pqAddress}`);
 
     const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
     assert.equal(snapshot.activeAddress, second.pqAddress, 'Active address must be the switched-to account');
+    assert.equal(snapshot.activeAccountId, `imported:${second.pqAddress}`, 'Active accountId must be the switched-to account');
+    assert.equal(snapshot.activeMultichainAccount.primaryAddress, second.pqAddress, 'primaryAddress must remain Shell/PQ root');
     assert.notEqual(snapshot.activeAddress, first.pqAddress, 'Must no longer be the first account');
+  });
+
+  test('SWITCH_ACCOUNT accepts accountId without weakening Shell PQ authority', async () => {
+    await resetAndCreate();
+    const second = await handleMessage({ type: 'ADD_ACCOUNT', password: PASSWORD2 });
+    const targetAccountId = `imported:${second.pqAddress}`;
+
+    const switched = await handleMessage({ type: 'SWITCH_ACCOUNT', password: PASSWORD2, accountId: targetAccountId });
+    assert.equal(switched.accountId, targetAccountId);
+    assert.equal(switched.pqAddress, second.pqAddress);
+
+    const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
+    assert.equal(snapshot.activeAccountId, targetAccountId);
+    assert.equal(snapshot.activeMultichainAccount.primaryAddress, second.pqAddress);
+    const shellAddress = snapshot.activeMultichainAccount.addresses.find((entry) => entry.addressKey === 'shell');
+    assert.equal(shellAddress.address, second.pqAddress);
+    assert.equal(shellAddress.signatureScheme, 'ml-dsa-65');
+    assert.equal(shellAddress.isShellAuthority, true);
   });
 
   test('SWITCH_ACCOUNT with wrong password throws and leaves signer unchanged', async () => {

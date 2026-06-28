@@ -304,6 +304,28 @@ class ShellaInpageProvider {
       this.emit('accountsChanged', [...this.accounts]);
     }
 
+    if (method === 'wallet_requestPermissions') {
+      const permissions = Array.isArray(result) ? result : [];
+      const accounts = permissions
+        .flatMap((permission) => {
+          if (!permission || typeof permission !== 'object') return [];
+          const caveats = (permission as { caveats?: unknown }).caveats;
+          if (!Array.isArray(caveats)) return [];
+          return caveats.flatMap((caveat) => {
+            if (!caveat || typeof caveat !== 'object') return [];
+            const value = (caveat as { value?: unknown }).value;
+            return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+          });
+        });
+      this.accounts = accounts;
+      this.emit('accountsChanged', [...this.accounts]);
+    }
+
+    if (method === 'wallet_revokePermissions') {
+      this.accounts = [];
+      this.emit('accountsChanged', []);
+    }
+
     if (method === 'eth_chainId' && typeof result === 'string') {
       this.chainId = result;
     }
