@@ -3044,33 +3044,41 @@ describe('HD wallet', () => {
     assert.equal(snapshot.locked, false, 'HD wallet must be unlocked right after creation');
   });
 
-  test('GET_PORTFOLIO_SNAPSHOT returns bounded multi-chain native balances with isolated failures', async () => {
+  test('GET_PORTFOLIO_SNAPSHOT limits default reads to active and explicitly watched networks', async () => {
     await resetHd();
     await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
 
     const portfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
     assert.equal(portfolio.accountId, 'hd:0');
     assert.ok(portfolio.generatedAt > 0);
-    assert.ok(portfolio.networks.length >= 7);
+    assert.equal(portfolio.networks.length, 1);
     assert.ok(portfolio.networks.some((network) =>
       network.chainKind === 'shell' &&
       network.networkName === 'Shell Devnet' &&
       network.status === 'ok' &&
       network.nativeAsset.formattedBalance === '1.000000',
     ));
-    assert.ok(portfolio.networks.some((network) =>
-      network.chainKind === 'bitcoin' &&
-      network.networkName === 'Bitcoin Testnet' &&
-      network.status === 'ok' &&
-      network.nativeAsset.formattedBalance === '0.8',
-    ));
-    assert.ok(portfolio.networks.some((network) =>
+    assert.equal(portfolio.networks.some((network) => network.chainKind === 'bitcoin'), false);
+    assert.equal(portfolio.networks.some((network) => network.chainKind === 'aptos'), false);
+
+    await chrome.storage.local.set({
+      watchedTokens: [{
+        chainKind: 'aptos',
+        chainId: 2,
+        contractAddress: '0x1::aptos_coin::AptosCoin',
+        symbol: 'APT',
+        decimals: 8,
+        addedAt: Date.now(),
+      }],
+    });
+    const watchedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.ok(watchedPortfolio.networks.some((network) =>
       network.chainKind === 'aptos' &&
       network.networkName === 'Aptos Testnet' &&
       network.status === 'ok' &&
       network.nativeAsset.formattedBalance === '1.23456789',
     ));
-    assert.equal(portfolio.networks.every((network) => typeof network.updatedAt === 'number'), true);
+    assert.equal(watchedPortfolio.networks.every((network) => typeof network.updatedAt === 'number'), true);
 
     aptosBalanceValue = 'not-a-number';
     const degraded = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });

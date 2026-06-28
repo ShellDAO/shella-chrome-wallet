@@ -23,12 +23,12 @@ All wallet data is stored **locally on your device** using Chrome's `chrome.stor
 - **Session state**: Whether your wallet is unlocked is stored in `chrome.storage.session`, which is cleared when the browser session ends.
 - **Network settings**: Your selected network configuration is stored locally.
 - **Transaction queue**: Pending transaction records are stored locally for status tracking.
-- **Portfolio state**: Portfolio Guard reads configured and preset network balances for your active account and displays the result locally. It does not upload or sell portfolio data.
+- **Portfolio state**: Portfolio Guard reads balances for your active network and networks where you explicitly added watched tokens, then displays the result locally. It does not upload or sell portfolio data.
 - **dApp session metadata**: Connected-site grants, WalletConnect sessions, TonConnect sessions, allowed methods, expiry times, and last-used timestamps are stored locally so you can review and revoke permissions.
 
 ## Network Requests
 
-The Extension makes network requests to the RPC endpoints you configure or select from built-in network presets. These requests are standard blockchain RPC calls required for wallet interaction, including balance queries, transaction submission, transaction status checks, and Portfolio Guard native-balance summaries. No personal data is included in these requests beyond public wallet addresses and public transaction data.
+The Extension makes network requests to the RPC endpoints you configure or select from built-in network presets. These requests are standard blockchain RPC calls required for wallet interaction, including balance queries, transaction submission, transaction status checks, and Portfolio Guard native-balance summaries for active or explicitly watched networks. No personal data is included in these requests beyond public wallet addresses and public transaction data.
 
 The Extension does not use analytics, advertising networks, or hosted portfolio indexing services.
 

@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- Portfolio Guard home snapshot with bounded multi-chain native balance reads, RPC provenance labels, watched-token counts, and isolated unavailable network states.
+- Portfolio Guard home snapshot with bounded native balance reads for the active network and explicitly watched-token networks, RPC provenance labels, watched-token counts, and isolated unavailable network states.
 - Unified Connect Center snapshot and revocation API for EIP-1193 connected sites, WalletConnect sessions, and TonConnect sessions.
 - High/critical approval requests now require an explicit risk confirmation checkbox before the approve button is enabled.
 

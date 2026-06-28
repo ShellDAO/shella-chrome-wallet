@@ -201,7 +201,6 @@ const APPROVAL_TTL_MS = 10 * 60 * 1000;
 const TON_PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const TONCONNECT_DAPP_METHODS = ['tonconnect_connect', 'tonconnect_restoreConnection', 'tonconnect_send'];
 const APTOS_DAPP_METHODS = ['aptos_connect', 'aptos_account', 'aptos_network', 'aptos_getBalance', 'aptos_signAndSubmitTransaction'];
-const PORTFOLIO_NETWORK_KEYS = ['devnet', 'tronShasta', 'solanaDevnet', 'bitcoinTestnet', 'cosmosHub', 'tonMainnet', 'aptosTestnet'] as const;
 const PORTFOLIO_BALANCE_TIMEOUT_MS = 2500;
 
 let currentSigner: ShellSigner | null = null;
@@ -1543,7 +1542,7 @@ async function getPortfolioSnapshot(): Promise<PortfolioSnapshot> {
     };
   }
 
-  const networks = getPortfolioNetworks(wallet.network);
+  const networks = getPortfolioNetworks(wallet);
   const items = await Promise.all(networks.map((network) => buildPortfolioNetworkAsset(wallet, account, network)));
   return {
     accountId: getAccountId(account),
@@ -1552,13 +1551,19 @@ async function getPortfolioSnapshot(): Promise<PortfolioSnapshot> {
   };
 }
 
-function getPortfolioNetworks(activeNetwork: Network): Network[] {
+function getPortfolioNetworks(wallet: WalletSnapshot['wallet']): Network[] {
   const byKey = new Map<string, Network>();
   const add = (network: Network): void => {
     byKey.set(`${getChainKind(network)}:${network.chainId}:${network.rpcUrl}`, network);
   };
-  add(activeNetwork);
-  for (const key of PORTFOLIO_NETWORK_KEYS) add(KNOWN_NETWORKS[key]);
+  add(wallet.network);
+  for (const token of wallet.watchedTokens) {
+    if (token.hidden === true) continue;
+    const tokenNetwork = Object.values(KNOWN_NETWORKS).find((network) =>
+      getChainKind(network) === token.chainKind && network.chainId === token.chainId,
+    );
+    if (tokenNetwork) add(tokenNetwork);
+  }
   return [...byKey.values()];
 }
 
