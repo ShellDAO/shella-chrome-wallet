@@ -2607,24 +2607,38 @@ test('WALLET-H2: wallet_addEthereumChain accepts https and localhost http URLs',
 });
 
 test('WALLET-M2: privileged messages from content scripts are blocked', async () => {
-  const privilegedTypes = [
-    'CREATE_WALLET',
-    'CREATE_HD_WALLET',
-    'RESTORE_HD_WALLET',
-    'REVEAL_MNEMONIC',
-    'EXPORT_KEYSTORE',
-    'SEND_TX',
-    'UNLOCK_WALLET',
-    'LOCK_WALLET',
-    'ADD_ACCOUNT',
-    'SWITCH_ACCOUNT',
-    'AUTHORIZE_SESSION_KEY',
-    'ROTATE_KEY',
-    'IMPORT_KEYSTORE',
-    'SET_NETWORK',
-    'SET_AUTO_LOCK',
-    'RESET_WALLET',
+  const backgroundSource = readFileSync(new URL('../src/background.ts', import.meta.url), 'utf8');
+  const handleMessageBody = backgroundSource.slice(
+    backgroundSource.indexOf('export async function handleMessage'),
+    backgroundSource.indexOf('async function createWallet'),
+  );
+  const handleMessageTypes = [...handleMessageBody.matchAll(/case '([^']+)'/g)].map((match) => match[1]);
+  const tokenProviderTypes = [
+    'GET_ERC20_TOKEN_INFO',
+    'GET_SPL_TOKEN_INFO',
+    'GET_TRC20_TOKEN_INFO',
+    'GET_JETTON_TOKEN_INFO',
+    'ADD_ERC20_TOKEN',
+    'ADD_SPL_TOKEN',
+    'ADD_TRC20_TOKEN',
+    'ADD_JETTON_TOKEN',
+    'REMOVE_ERC20_TOKEN',
+    'REMOVE_SPL_TOKEN',
+    'REMOVE_TRC20_TOKEN',
+    'REMOVE_JETTON_TOKEN',
+    'GET_ERC20_BALANCE',
+    'GET_SPL_BALANCE',
+    'GET_TRC20_BALANCE',
+    'GET_JETTON_BALANCE',
+    'GET_SPL_RECIPIENT_ACCOUNT_STATUS',
+    'GET_JETTON_HISTORY',
+    'SEND_ERC20_TRANSFER',
+    'SEND_SPL_TRANSFER',
+    'SEND_TRC20_TRANSFER',
+    'SEND_JETTON_TRANSFER',
   ];
+  const privilegedTypes = [...new Set([...handleMessageTypes, ...tokenProviderTypes])]
+    .filter((type) => type !== 'DAPP_REQUEST');
 
   for (const type of privilegedTypes) {
     const response = await new Promise((resolve) => {
@@ -3044,11 +3058,16 @@ describe('HD wallet', () => {
     assert.equal(snapshot.locked, false, 'HD wallet must be unlocked right after creation');
   });
 
-  test('GET_PORTFOLIO_SNAPSHOT limits default reads to active and explicitly watched networks', async () => {
+  test('portfolio snapshot cache only refreshes on explicit request and marks stale cache', async () => {
     await resetHd();
+    resetAlarmState();
     await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
 
-    const portfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    const emptyPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(emptyPortfolio, null);
+    assert.equal(rpcRequests.length, 0, 'GET_PORTFOLIO_SNAPSHOT must not perform RPC reads');
+
+    const portfolio = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
     assert.equal(portfolio.accountId, 'hd:0');
     assert.ok(portfolio.generatedAt > 0);
     assert.equal(portfolio.networks.length, 1);
@@ -3061,6 +3080,12 @@ describe('HD wallet', () => {
     assert.equal(portfolio.networks.some((network) => network.chainKind === 'bitcoin'), false);
     assert.equal(portfolio.networks.some((network) => network.chainKind === 'aptos'), false);
 
+    const rpcReadsAfterRefresh = rpcRequests.length;
+    const cachedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(cachedPortfolio.accountId, 'hd:0');
+    assert.equal(cachedPortfolio.networks.length, 1);
+    assert.equal(rpcRequests.length, rpcReadsAfterRefresh, 'cached portfolio read must not perform additional RPC reads');
+
     await chrome.storage.local.set({
       watchedTokens: [{
         chainKind: 'aptos',
@@ -3071,7 +3096,10 @@ describe('HD wallet', () => {
         addedAt: Date.now(),
       }],
     });
-    const watchedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    const stillCachedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(stillCachedPortfolio.networks.some((network) => network.chainKind === 'aptos'), false);
+
+    const watchedPortfolio = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
     assert.ok(watchedPortfolio.networks.some((network) =>
       network.chainKind === 'aptos' &&
       network.networkName === 'Aptos Testnet' &&
@@ -3080,8 +3108,18 @@ describe('HD wallet', () => {
     ));
     assert.equal(watchedPortfolio.networks.every((network) => typeof network.updatedAt === 'number'), true);
 
+    await chrome.storage.local.set({
+      portfolioSnapshotCache: {
+        ...watchedPortfolio,
+        generatedAt: Date.now() - 61_000,
+      },
+    });
+    const stalePortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(stalePortfolio.networks.every((network) => network.status === 'stale'), true);
+    assert.match(stalePortfolio.networks[0].error, /stale/i);
+
     aptosBalanceValue = 'not-a-number';
-    const degraded = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    const degraded = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
     const aptos = degraded.networks.find((network) => network.chainKind === 'aptos');
     const shell = degraded.networks.find((network) => network.chainKind === 'shell');
     assert.equal(aptos.status, 'unavailable');

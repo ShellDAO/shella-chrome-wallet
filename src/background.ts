@@ -129,6 +129,7 @@ import {
   getPendingKeyRotations,
   getNetwork,
   getTonConnectSessions,
+  getPortfolioSnapshotCache,
   getTxQueue,
   getWalletState,
   getWalletConnectConfig,
@@ -147,6 +148,7 @@ import {
   setLastActiveAddress,
   setNetwork,
   setPendingKeyRotations,
+  setPortfolioSnapshotCache,
   setSessionState,
   setWalletConnectConfig,
   setWatchedTokenHidden,
@@ -202,6 +204,9 @@ const TON_PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const TONCONNECT_DAPP_METHODS = ['tonconnect_connect', 'tonconnect_restoreConnection', 'tonconnect_send'];
 const APTOS_DAPP_METHODS = ['aptos_connect', 'aptos_account', 'aptos_network', 'aptos_getBalance', 'aptos_signAndSubmitTransaction'];
 const PORTFOLIO_BALANCE_TIMEOUT_MS = 2500;
+const PORTFOLIO_STALE_AFTER_MS = 60 * 1000;
+const PORTFOLIO_EXPIRED_AFTER_MS = 10 * 60 * 1000;
+const PORTFOLIO_REFRESH_CONCURRENCY = 2;
 
 let currentSigner: ShellSigner | null = null;
 let currentTronPrivateKey: Uint8Array | null = null;
@@ -754,6 +759,8 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return getWalletSnapshot();
     case 'GET_PORTFOLIO_SNAPSHOT':
       return getPortfolioSnapshot();
+    case 'REFRESH_PORTFOLIO_SNAPSHOT':
+      return refreshPortfolioSnapshot();
     case 'GET_ACCOUNTS':
       return { accounts: await getAccounts() };
     case 'GET_BALANCE':
@@ -1398,6 +1405,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
   const activeAccount = await getActiveAccount();
   const primaryAccount = wallet.accounts[0] ?? null;
   const locked = currentSigner === null;
+  const portfolioSnapshot = await getPortfolioSnapshot();
 
   if (!primaryAccount) {
     return {
@@ -1412,6 +1420,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce: null,
       detectedChainId: null,
       nodeInfo: null,
+      portfolioSnapshot,
     };
   }
 
@@ -1434,6 +1443,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
           detectedChainId: wallet.network.chainId,
           nodeInfo: null,
           portfolioAssets: [],
+          portfolioSnapshot,
         };
       }
       const [balance, nonce, cosmosBalances, cosmosStaking, cosmosRedelegations, cosmosValidators, cosmosGovernanceProposals, cosmosIbcContext] = await Promise.all([
@@ -1463,6 +1473,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
         nonce,
         detectedChainId: wallet.network.chainId,
         nodeInfo: null,
+        portfolioSnapshot,
         portfolioAssets: await buildPortfolioAssets({
           wallet,
           account: queryAccount,
@@ -1494,6 +1505,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce,
       detectedChainId,
       nodeInfo,
+      portfolioSnapshot,
       portfolioAssets: await buildPortfolioAssets({
         wallet,
         account: queryAccount,
@@ -1516,6 +1528,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce: null,
       detectedChainId: null,
       nodeInfo: null,
+      portfolioSnapshot,
       portfolioAssets: activeAddress
         ? [buildUnavailableNativePortfolioAsset(wallet.network, activeAddress, 'Balance unavailable')]
         : [],
@@ -1530,24 +1543,47 @@ function getSnapshotAccountMeta(account: StoredAccount): Pick<WalletSnapshot, 'a
   };
 }
 
-async function getPortfolioSnapshot(): Promise<PortfolioSnapshot> {
+async function getPortfolioSnapshot(): Promise<PortfolioSnapshot | null> {
+  const cached = await getPortfolioSnapshotCache();
+  return cached ? applyPortfolioCacheAge(cached) : null;
+}
+
+async function refreshPortfolioSnapshot(): Promise<PortfolioSnapshot> {
   const wallet = await getWalletState();
   const activeAccount = await getActiveAccount();
   const account = activeAccount ?? wallet.accounts[0] ?? null;
   if (!account) {
-    return {
+    const empty = {
       accountId: null,
       generatedAt: Date.now(),
       networks: [],
     };
+    await setPortfolioSnapshotCache(empty);
+    return empty;
   }
 
   const networks = getPortfolioNetworks(wallet);
-  const items = await Promise.all(networks.map((network) => buildPortfolioNetworkAsset(wallet, account, network)));
-  return {
+  const items = await mapWithConcurrency(networks, PORTFOLIO_REFRESH_CONCURRENCY, (network) => buildPortfolioNetworkAsset(wallet, account, network));
+  const snapshot = {
     accountId: getAccountId(account),
     generatedAt: Date.now(),
     networks: items,
+  };
+  await setPortfolioSnapshotCache(snapshot);
+  return snapshot;
+}
+
+function applyPortfolioCacheAge(snapshot: PortfolioSnapshot, now = Date.now()): PortfolioSnapshot {
+  const ageMs = now - snapshot.generatedAt;
+  if (ageMs < PORTFOLIO_STALE_AFTER_MS) return snapshot;
+  const suffix = ageMs >= PORTFOLIO_EXPIRED_AFTER_MS ? ' Refresh required.' : ' Refresh recommended.';
+  return {
+    ...snapshot,
+    networks: snapshot.networks.map((network) => ({
+      ...network,
+      status: 'stale',
+      error: network.error ?? `Cached portfolio data is stale.${suffix}`,
+    })),
   };
 }
 
@@ -1645,8 +1681,8 @@ async function buildPortfolioNetworkAsset(
 async function getNativeBalanceForNetwork(network: Network, address: string): Promise<{ balance: string; formatted: string }> {
   const nativeAdapter = getNativeChainAdapter(getChainKind(network));
   if (nativeAdapter) return nativeAdapter.getBalance(network, address);
-  const provider = buildProvider(network);
-  const balance = await provider.client.getBalance({ address: asPqAddress(address, 'getBalance') });
+  const balanceHex = await portfolioRpcRequest<string>(network.rpcUrl, 'eth_getBalance', [asPqAddress(address, 'getBalance'), 'latest'], PORTFOLIO_BALANCE_TIMEOUT_MS);
+  const balance = BigInt(balanceHex);
   return { balance: balance.toString(), formatted: formatEther(balance) };
 }
 
@@ -1664,6 +1700,42 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       },
     );
   });
+}
+
+async function portfolioRpcRequest<T>(rpcUrl: string, method: string, params: unknown[], timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`rpc request failed: ${res.status} ${res.statusText}`);
+    const data = await res.json() as { result?: T; error?: { code?: number; message?: string } };
+    if (data.error) throw new Error(`[${data.error.code ?? -32000}] ${data.error.message ?? 'RPC error'}`);
+    return data.result as T;
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') throw new Error('Balance request timed out');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function defaultNativeSymbol(chainKind: ChainKind): string {

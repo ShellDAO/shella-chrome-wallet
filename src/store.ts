@@ -11,6 +11,7 @@ import type {
   MultichainAddress,
   Network,
   PendingKeyRotation,
+  PortfolioSnapshot,
   SessionState,
   StoredAccount,
   TonConnectFeature,
@@ -438,6 +439,24 @@ function normalizeWalletConnectPairings(value: unknown, now = Date.now()): { pai
   return { pairings, migrated };
 }
 
+function normalizePortfolioSnapshotCache(value: unknown): PortfolioSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<PortfolioSnapshot>;
+  if (typeof candidate.accountId !== 'string' && candidate.accountId !== null) return null;
+  if (typeof candidate.generatedAt !== 'number' || !Number.isFinite(candidate.generatedAt)) return null;
+  if (!Array.isArray(candidate.networks)) return null;
+  return {
+    accountId: candidate.accountId ?? null,
+    generatedAt: candidate.generatedAt,
+    networks: candidate.networks.filter((network) =>
+      network &&
+      typeof network === 'object' &&
+      typeof (network as { chainId?: unknown }).chainId === 'number' &&
+      typeof (network as { networkName?: unknown }).networkName === 'string',
+    ) as PortfolioSnapshot['networks'],
+  };
+}
+
 function normalizeWalletConnectConfig(value: unknown): WalletConnectConfig {
   if (!value || typeof value !== 'object') return DEFAULT_WALLETCONNECT_CONFIG;
   const candidate = value as Partial<WalletConnectConfig>;
@@ -795,6 +814,19 @@ export async function removeWalletConnectPairing(topic: string): Promise<void> {
   await chrome.storage.local.set({
     walletConnectPairings: pairings.filter((pairing) => pairing.topic !== topic),
   });
+}
+
+export async function getPortfolioSnapshotCache(): Promise<PortfolioSnapshot | null> {
+  const { portfolioSnapshotCache } = await chrome.storage.local.get('portfolioSnapshotCache');
+  return normalizePortfolioSnapshotCache(portfolioSnapshotCache);
+}
+
+export async function setPortfolioSnapshotCache(portfolioSnapshotCache: PortfolioSnapshot): Promise<void> {
+  await chrome.storage.local.set({ portfolioSnapshotCache });
+}
+
+export async function clearPortfolioSnapshotCache(): Promise<void> {
+  await chrome.storage.local.remove('portfolioSnapshotCache');
 }
 
 export async function getWatchedTokens(): Promise<WatchedToken[]> {

@@ -285,6 +285,7 @@ describe('popup', async () => {
     assert.ok(html.includes('section-header-title'));
     assert.ok(html.includes('Portfolio Guard'));
     assert.ok(html.includes('1/2 online'));
+    assert.ok(html.includes('btn-refresh-portfolio'));
     assert.ok(html.includes('Shell Devnet'));
     assert.ok(html.includes('Aptos Testnet'));
     assert.ok(html.includes('Balance request timed out'));
@@ -294,6 +295,63 @@ describe('popup', async () => {
     assert.ok(html.includes('Hidden ERC20 (1)'));
     assert.ok(html.includes('btn-token-show'));
     assert.ok(html.includes('Copy'));
+  });
+
+  test('wallet main view shows portfolio not-checked state without cached snapshot', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderWallet } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderWallet !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: '0x' + 'a'.repeat(64),
+      balanceFormatted: '1.250000',
+      detectedChainId: 424242,
+      network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
+      accounts: [],
+      watchedTokens: [],
+      portfolioAssets: [],
+      portfolioSnapshot: null,
+      portfolioRefreshing: false,
+      portfolioRefreshError: '',
+      txQueue: [],
+      nodeInfo: null,
+    });
+
+    const html = renderWallet();
+    assert.ok(html.includes('Portfolio Guard'));
+    assert.ok(html.includes('Not checked yet'));
+    assert.ok(html.includes('btn-refresh-portfolio'));
+  });
+
+  test('locked view uses accountId-first selector while preserving Shell PQ root label', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderLocked } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderLocked !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: '0x' + 'a'.repeat(64),
+      activeAccountId: 'hd:1',
+      accounts: [{
+        accountId: 'hd:0',
+        displayName: 'Trading',
+        primaryAddress: '0x' + 'a'.repeat(64),
+        pqAddress: '0x' + 'a'.repeat(64),
+        keystoreJson: '{}',
+      }, {
+        accountId: 'hd:1',
+        displayName: 'Vault',
+        primaryAddress: '0x' + 'c'.repeat(64),
+        pqAddress: '0x' + 'c'.repeat(64),
+        keystoreJson: '{}',
+      }],
+    });
+
+    const html = renderLocked();
+    assert.ok(html.includes('value="hd:0"'));
+    assert.ok(html.includes('value="hd:1"'));
+    assert.ok(html.includes('data-address="0x'));
+    assert.ok(html.includes('Vault'));
+    assert.ok(html.includes('selected'));
   });
 
   test('accounts view renders multichain account identity without replacing Shell PQ root', async () => {

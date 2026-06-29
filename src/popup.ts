@@ -96,6 +96,8 @@ interface AppState {
   tokenBalances: Record<string, { balance: string; formatted: string; symbol: string; decimals: number }>;
   portfolioAssets: PortfolioAsset[];
   portfolioSnapshot: PortfolioSnapshot | null;
+  portfolioRefreshing: boolean;
+  portfolioRefreshError: string;
   cosmosBalances: CosmosDenomBalance[];
   cosmosStaking: CosmosStakingPosition[];
   cosmosRedelegations: CosmosRedelegationEntry[];
@@ -367,6 +369,8 @@ const state: AppState = {
   tokenBalances: {},
   portfolioAssets: [],
   portfolioSnapshot: null,
+  portfolioRefreshing: false,
+  portfolioRefreshError: '',
   cosmosBalances: [],
   cosmosStaking: [],
   cosmosRedelegations: [],
@@ -924,15 +928,18 @@ function renderImportPassword(): string {
   `;
 }
 
-function renderLocked(): string {
+export function renderLocked(): string {
     const accountSelectorHtml = state.accounts.length > 1
     ? `<label>Account
         <select id="unlock-account-select">
-          ${state.accounts.map(a =>
-            `<option value="${escapeHtml(a.pqAddress)}" ${a.pqAddress === state.pqAddress ? 'selected' : ''}>
-               ${escapeHtml(truncate(a.pqAddress))}
+          ${state.accounts.map((account, index) => {
+            const accountId = popupAccountId(account);
+            const label = account.displayName ?? `Account ${index + 1}`;
+            const selected = accountId === state.activeAccountId || account.pqAddress === state.pqAddress;
+            return `<option value="${escapeHtml(accountId)}" data-address="${escapeHtml(account.pqAddress)}" ${selected ? 'selected' : ''}>
+               ${escapeHtml(label)} · ${escapeHtml(truncate(account.primaryAddress ?? account.pqAddress))}
              </option>`
-          ).join('')}
+          }).join('')}
         </select>
       </label>`
     : '';
@@ -1083,10 +1090,23 @@ export function renderWallet(): string {
 
 function renderPortfolioGuard(): string {
   const snapshot = state.portfolioSnapshot;
-  if (!snapshot || snapshot.networks.length === 0) return '';
+  if (!snapshot || snapshot.networks.length === 0) {
+    return `
+      <div class="token-card portfolio-guard">
+        <div class="section-header">
+          <span class="section-header-title">Portfolio Guard</span>
+          <button class="btn-secondary btn-compact" id="btn-refresh-portfolio" ${state.portfolioRefreshing ? 'disabled' : ''}>${state.portfolioRefreshing ? 'Refreshing' : 'Refresh'}</button>
+        </div>
+        <div class="empty-panel compact-empty">Not checked yet</div>
+        ${state.portfolioRefreshError ? `<div class="status-card status-card-error">${escapeHtml(state.portfolioRefreshError)}</div>` : ''}
+      </div>
+    `;
+  }
   const available = snapshot.networks.filter((network) => network.status === 'ok').length;
   const risky = snapshot.networks.length - available;
   const generated = new Date(snapshot.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const ageMs = Math.max(0, Date.now() - snapshot.generatedAt);
+  const cacheLabel = ageMs >= 10 * 60 * 1000 ? 'expired cache' : ageMs >= 60 * 1000 ? 'stale cache' : 'fresh cache';
   const rows = snapshot.networks.map((network) => {
     const balance = network.nativeAsset?.formattedBalance ?? 'unavailable';
     const statusLabel = network.status === 'ok' ? 'OK' : network.status === 'stale' ? 'Stale' : 'Unavailable';
@@ -1112,8 +1132,10 @@ function renderPortfolioGuard(): string {
     <div class="token-card portfolio-guard">
       <div class="section-header">
         <span class="section-header-title">Portfolio Guard</span>
-        <span class="muted">${available}/${snapshot.networks.length} online · ${risky} risk · ${escapeHtml(generated)}</span>
+        <span class="muted">${available}/${snapshot.networks.length} online · ${risky} risk · ${escapeHtml(cacheLabel)} · ${escapeHtml(generated)}</span>
+        <button class="btn-secondary btn-compact" id="btn-refresh-portfolio" ${state.portfolioRefreshing ? 'disabled' : ''}>${state.portfolioRefreshing ? 'Refreshing' : 'Refresh'}</button>
       </div>
+      ${state.portfolioRefreshError ? `<div class="status-card status-card-error">${escapeHtml(state.portfolioRefreshError)}</div>` : ''}
       <div class="portfolio-network-list">
         ${rows}
       </div>
@@ -3221,12 +3243,18 @@ function attachHandlers(): void {
   on('btn-unlock', 'click', async () => {
     const pwd = (document.getElementById('unlock-pwd') as HTMLInputElement)?.value;
     if (!pwd) return;
-    const selectedAddress = (document.getElementById('unlock-account-select') as HTMLSelectElement | null)?.value;
+    const accountSelect = document.getElementById('unlock-account-select') as HTMLSelectElement | null;
+    const selectedAccountId = accountSelect?.value;
+    const selectedAddress = accountSelect?.selectedOptions[0]?.dataset.address;
     state.error = '';
     state.view = 'unlocking';
     render();
     try {
-      await send('UNLOCK_WALLET', { password: pwd, ...(selectedAddress ? { address: selectedAddress } : {}) });
+      await send('UNLOCK_WALLET', {
+        password: pwd,
+        ...(selectedAccountId ? { accountId: selectedAccountId } : {}),
+        ...(selectedAddress ? { address: selectedAddress } : {}),
+      });
       await refreshWalletData();
       state.view = 'wallet';
       render();
@@ -3692,6 +3720,23 @@ function attachHandlers(): void {
       showToast('Balance refreshed');
     } catch (err) {
       showToast((err as Error).message, true);
+    }
+  });
+
+  on('btn-refresh-portfolio', 'click', async () => {
+    state.portfolioRefreshing = true;
+    state.portfolioRefreshError = '';
+    render();
+    try {
+      state.portfolioSnapshot = await send<PortfolioSnapshot>('REFRESH_PORTFOLIO_SNAPSHOT');
+      state.portfolioRefreshError = '';
+      showToast('Portfolio refreshed');
+    } catch (err) {
+      state.portfolioRefreshError = (err as Error).message;
+      showToast(state.portfolioRefreshError, true);
+    } finally {
+      state.portfolioRefreshing = false;
+      render();
     }
   });
 
@@ -4417,7 +4462,7 @@ async function refreshWalletData(): Promise<void> {
   state.dappSessions = (await send<DappSessionsSnapshot>('GET_DAPP_SESSIONS_SNAPSHOT').catch(() => ({ sessions: [] }))).sessions;
   state.walletConnectPairings = snapshot.wallet.walletConnectPairings ?? [];
   state.portfolioAssets = snapshot.portfolioAssets ?? [];
-  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? await send<PortfolioSnapshot>('GET_PORTFOLIO_SNAPSHOT').catch(() => null);
+  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? null;
   state.bitcoinUtxoPreferences = snapshot.wallet.bitcoinUtxoPreferences ?? [];
   state.walletConnectRelayStatus = await send<WalletConnectRelayStatus>('GET_WALLETCONNECT_RELAY_STATUS').catch(() => null);
   state.detectedChainId = snapshot.detectedChainId;
@@ -4746,7 +4791,7 @@ async function boot(): Promise<void> {
   state.dappSessions = (await send<DappSessionsSnapshot>('GET_DAPP_SESSIONS_SNAPSHOT').catch(() => ({ sessions: [] }))).sessions;
   state.walletConnectPairings = snapshot.wallet.walletConnectPairings ?? [];
   state.portfolioAssets = snapshot.portfolioAssets ?? [];
-  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? await send<PortfolioSnapshot>('GET_PORTFOLIO_SNAPSHOT').catch(() => null);
+  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? null;
   state.bitcoinUtxoPreferences = snapshot.wallet.bitcoinUtxoPreferences ?? [];
   state.walletConnectRelayStatus = await send<WalletConnectRelayStatus>('GET_WALLETCONNECT_RELAY_STATUS').catch(() => null);
   state.detectedChainId = snapshot.detectedChainId;

@@ -76,6 +76,9 @@ const {
   upsertBitcoinUtxoPreferences,
   setWatchedTokenHidden,
   getAccountId,
+  getPortfolioSnapshotCache,
+  setPortfolioSnapshotCache,
+  clearPortfolioSnapshotCache,
 } = await import('../dist/store.js');
 
 describe('store', () => {
@@ -386,6 +389,31 @@ describe('store', () => {
 
     await removeWalletConnectPairing('pairing-topic');
     assert.deepEqual(await getWalletConnectPairings(), []);
+  });
+
+  test('portfolio snapshot cache can be stored, read, and cleared', async () => {
+    assert.equal(await getPortfolioSnapshotCache(), null);
+    const snapshot = {
+      accountId: 'hd:0',
+      generatedAt: 123,
+      networks: [{
+        chainKind: 'shell',
+        chainId: 424242,
+        networkName: 'Shell Devnet',
+        rpcProvenance: 'owned',
+        address: `0x${'aa'.repeat(32)}`,
+        symbol: 'SHELL',
+        nativeAsset: null,
+        watchedTokenCount: 0,
+        status: 'ok',
+        error: null,
+        updatedAt: 123,
+      }],
+    };
+    await setPortfolioSnapshotCache(snapshot);
+    assert.deepEqual(await getPortfolioSnapshotCache(), snapshot);
+    await clearPortfolioSnapshotCache();
+    assert.equal(await getPortfolioSnapshotCache(), null);
   });
 
   test('watched tokens can be added, replaced, and removed', async () => {
