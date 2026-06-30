@@ -142,18 +142,9 @@ The wallet ships with four preset networks:
 | `testnet` | Shell Testnet | 10 | `https://rpc.testnet.shell.network` |
 | `mainnet` | Shell Mainnet | 100000 | `https://rpc.mainnet.shell.network` |
 
-### Connecting to SG3 testnet via SSH tunnel (recommended for development)
+### Connecting to a local testnet RPC
 
-The SG3 testnet node exposes RPC on port 8545. Since the wallet only accepts
-HTTP for `localhost`, forward the port locally before loading the extension:
-
-```bash
-# Keep this running in a separate terminal
-ssh -N -L 8545:127.0.0.1:8545 root@47.237.195.95 \
-  -i ~/.ssh/shell-testnet-sg-20260504035712.pem
-```
-
-Then in the wallet popup:
+If you run or forward a Shell testnet RPC locally, load the extension and then:
 
 1. Open **Settings → Network** and select **Shell Testnet — local (10, localhost)**.
 2. The wallet will probe `shell_getNodeInfo` on boot and display the node version,
@@ -190,7 +181,7 @@ If chain IDs mismatch a different warning prompts you to switch networks.
 
 ## Dependencies
 
-- [`shell-sdk`](https://github.com/LucienSong/shell-sdk) — ML-DSA-65 adapter, ShellSigner, provider, tx builders
+- [`shell-sdk`](https://github.com/ShellDAO/shell-sdk) — ML-DSA-65 adapter, ShellSigner, provider, tx builders
 - [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) — Argon2id KDF (pure JS)
 - [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) — XChaCha20-Poly1305 (pure JS)
 - [`viem`](https://viem.sh) — Ethereum primitives (hex, encoding)
