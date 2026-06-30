@@ -336,6 +336,9 @@ globalThis.fetch = async (url, init) => {
   }
   if (isAptosRpc && urlText.includes('/accounts/') && urlText.includes('CoinStore')) {
     aptosRequests.push({ url, kind: 'balance' });
+    if (aptosAccountMode === 'not-found') {
+      return new Response(JSON.stringify({ message: 'account not found' }), { status: 404 });
+    }
     return new Response(
       JSON.stringify({ data: { coin: { value: aptosBalanceValue } } }),
       { status: 200, headers: { 'content-type': 'application/json' } },
@@ -1706,6 +1709,57 @@ test('dapp provider supports permissions, revocation, and Shell message signing 
   assert.deepEqual(accountsAfterRevoke, []);
 });
 
+test('dapp sessions snapshot unifies local, WalletConnect, and TonConnect revocation', async () => {
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art', password: 'correct horse battery' });
+
+  const approvalsBeforeConnect = createdWindows.length;
+  const accountsPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://sessions.example',
+    method: 'eth_requestAccounts',
+    params: [],
+  });
+  await resolveLatestApproval(true, approvalsBeforeConnect);
+  await accountsPromise;
+
+  await handleMessage({
+    type: 'CREATE_WALLETCONNECT_SESSION',
+    topic: 'wc-unified',
+    origin: 'https://wc-unified.example',
+    chainIds: [424242],
+    methods: ['eth_chainId', 'eth_sendTransaction'],
+    expirySeconds: 3600,
+  });
+  await handleMessage({
+    type: 'SET_NETWORK',
+    network: { name: 'TON Mainnet', chainId: 607, rpcUrl: 'https://toncenter.com/api/v2', kind: 'ton', symbol: 'TON', rpcProvenance: 'third-party-public' },
+  });
+  await handleMessage({
+    type: 'CREATE_TONCONNECT_SESSION',
+    clientId: 'ton-unified',
+    origin: 'https://ton-unified.example',
+    manifestUrl: 'https://ton-unified.example/tonconnect-manifest.json',
+    features: [{ name: 'SendTransaction', maxMessages: 4 }],
+    expirySeconds: 3600,
+  });
+
+  const snapshot = await handleMessage({ type: 'GET_DAPP_SESSIONS_SNAPSHOT' });
+  assert.ok(snapshot.sessions.length >= 3);
+  assert.ok(snapshot.sessions.some((session) => session.id === 'connected-site:https://sessions.example' && session.protocol === 'EIP-1193'));
+  assert.ok(snapshot.sessions.some((session) => session.id === 'walletconnect:wc-unified' && session.riskFlags.includes('can request signing')));
+  assert.ok(snapshot.sessions.some((session) => session.id === 'tonconnect:ton-unified' && session.protocol === 'TonConnect'));
+
+  await handleMessage({ type: 'REVOKE_DAPP_SESSION', sessionId: 'walletconnect:wc-unified' });
+  const afterWalletConnectRevoke = await handleMessage({ type: 'GET_DAPP_SESSIONS_SNAPSHOT' });
+  assert.equal(afterWalletConnectRevoke.sessions.some((session) => session.id === 'walletconnect:wc-unified'), false);
+
+  await handleMessage({ type: 'REVOKE_DAPP_SESSION', sessionId: 'connected-site:https://sessions.example' });
+  const afterLocalRevoke = await handleMessage({ type: 'GET_CONNECTED_SITES' });
+  assert.equal(afterLocalRevoke.sites.some((site) => site.origin === 'https://sessions.example'), false);
+});
+
 test('disconnect all clears dApp, WalletConnect, and TonConnect sessions without deleting wallet data', async () => {
   const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
   const password = 'hdwallet-test-password!';
@@ -2553,24 +2607,38 @@ test('WALLET-H2: wallet_addEthereumChain accepts https and localhost http URLs',
 });
 
 test('WALLET-M2: privileged messages from content scripts are blocked', async () => {
-  const privilegedTypes = [
-    'CREATE_WALLET',
-    'CREATE_HD_WALLET',
-    'RESTORE_HD_WALLET',
-    'REVEAL_MNEMONIC',
-    'EXPORT_KEYSTORE',
-    'SEND_TX',
-    'UNLOCK_WALLET',
-    'LOCK_WALLET',
-    'ADD_ACCOUNT',
-    'SWITCH_ACCOUNT',
-    'AUTHORIZE_SESSION_KEY',
-    'ROTATE_KEY',
-    'IMPORT_KEYSTORE',
-    'SET_NETWORK',
-    'SET_AUTO_LOCK',
-    'RESET_WALLET',
+  const backgroundSource = readFileSync(new URL('../src/background.ts', import.meta.url), 'utf8');
+  const handleMessageBody = backgroundSource.slice(
+    backgroundSource.indexOf('export async function handleMessage'),
+    backgroundSource.indexOf('async function createWallet'),
+  );
+  const handleMessageTypes = [...handleMessageBody.matchAll(/case '([^']+)'/g)].map((match) => match[1]);
+  const tokenProviderTypes = [
+    'GET_ERC20_TOKEN_INFO',
+    'GET_SPL_TOKEN_INFO',
+    'GET_TRC20_TOKEN_INFO',
+    'GET_JETTON_TOKEN_INFO',
+    'ADD_ERC20_TOKEN',
+    'ADD_SPL_TOKEN',
+    'ADD_TRC20_TOKEN',
+    'ADD_JETTON_TOKEN',
+    'REMOVE_ERC20_TOKEN',
+    'REMOVE_SPL_TOKEN',
+    'REMOVE_TRC20_TOKEN',
+    'REMOVE_JETTON_TOKEN',
+    'GET_ERC20_BALANCE',
+    'GET_SPL_BALANCE',
+    'GET_TRC20_BALANCE',
+    'GET_JETTON_BALANCE',
+    'GET_SPL_RECIPIENT_ACCOUNT_STATUS',
+    'GET_JETTON_HISTORY',
+    'SEND_ERC20_TRANSFER',
+    'SEND_SPL_TRANSFER',
+    'SEND_TRC20_TRANSFER',
+    'SEND_JETTON_TRANSFER',
   ];
+  const privilegedTypes = [...new Set([...handleMessageTypes, ...tokenProviderTypes])]
+    .filter((type) => type !== 'DAPP_REQUEST');
 
   for (const type of privilegedTypes) {
     const response = await new Promise((resolve) => {
@@ -2988,6 +3056,75 @@ describe('HD wallet', () => {
     await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
     const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
     assert.equal(snapshot.locked, false, 'HD wallet must be unlocked right after creation');
+  });
+
+  test('portfolio snapshot cache only refreshes on explicit request and marks stale cache', async () => {
+    await resetHd();
+    resetAlarmState();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+
+    const emptyPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(emptyPortfolio, null);
+    assert.equal(rpcRequests.length, 0, 'GET_PORTFOLIO_SNAPSHOT must not perform RPC reads');
+
+    const portfolio = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
+    assert.equal(portfolio.accountId, 'hd:0');
+    assert.ok(portfolio.generatedAt > 0);
+    assert.equal(portfolio.networks.length, 1);
+    assert.ok(portfolio.networks.some((network) =>
+      network.chainKind === 'shell' &&
+      network.networkName === 'Shell Devnet' &&
+      network.status === 'ok' &&
+      network.nativeAsset.formattedBalance === '1.000000',
+    ));
+    assert.equal(portfolio.networks.some((network) => network.chainKind === 'bitcoin'), false);
+    assert.equal(portfolio.networks.some((network) => network.chainKind === 'aptos'), false);
+
+    const rpcReadsAfterRefresh = rpcRequests.length;
+    const cachedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(cachedPortfolio.accountId, 'hd:0');
+    assert.equal(cachedPortfolio.networks.length, 1);
+    assert.equal(rpcRequests.length, rpcReadsAfterRefresh, 'cached portfolio read must not perform additional RPC reads');
+
+    await chrome.storage.local.set({
+      watchedTokens: [{
+        chainKind: 'aptos',
+        chainId: 2,
+        contractAddress: '0x1::aptos_coin::AptosCoin',
+        symbol: 'APT',
+        decimals: 8,
+        addedAt: Date.now(),
+      }],
+    });
+    const stillCachedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(stillCachedPortfolio.networks.some((network) => network.chainKind === 'aptos'), false);
+
+    const watchedPortfolio = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
+    assert.ok(watchedPortfolio.networks.some((network) =>
+      network.chainKind === 'aptos' &&
+      network.networkName === 'Aptos Testnet' &&
+      network.status === 'ok' &&
+      network.nativeAsset.formattedBalance === '1.23456789',
+    ));
+    assert.equal(watchedPortfolio.networks.every((network) => typeof network.updatedAt === 'number'), true);
+
+    await chrome.storage.local.set({
+      portfolioSnapshotCache: {
+        ...watchedPortfolio,
+        generatedAt: Date.now() - 61_000,
+      },
+    });
+    const stalePortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(stalePortfolio.networks.every((network) => network.status === 'stale'), true);
+    assert.match(stalePortfolio.networks[0].error, /stale/i);
+
+    aptosBalanceValue = 'not-a-number';
+    const degraded = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
+    const aptos = degraded.networks.find((network) => network.chainKind === 'aptos');
+    const shell = degraded.networks.find((network) => network.chainKind === 'shell');
+    assert.equal(aptos.status, 'unavailable');
+    assert.match(aptos.error, /not found|unavailable|failed/i);
+    assert.equal(shell.status, 'ok');
   });
 
   test('ADD_ACCOUNT on HD wallet derives deterministic second account', async () => {

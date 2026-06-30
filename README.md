@@ -11,6 +11,9 @@ Chrome wallet for [Shell Chain](https://github.com/LucienSong/shell-chain) — q
 - 📥 **Receive** — display full address with one-click copy
 - 📜 **Transaction history** — query `shell_getTransactionsByAddress`, display reward-aware Shell tx labels, and preserve STARK reward metadata from address history summaries
 - 🌐 **Multi-network** — switch between devnet / testnet / mainnet or configure a custom RPC URL
+- 🛡️ **Portfolio Guard** — popup home summarizes native balances for the active network and explicitly watched-token networks with per-network RPC provenance and isolated unavailable/stale states
+- 🔎 **Connect Center** — Settings aggregates EIP-1193 connected sites, WalletConnect sessions, and TonConnect sessions into one revocable permission view with account, chain, method, expiry, and risk flags
+- ⚠️ **Approval Risk Engine** — approval screens show structured risk summaries and require an explicit confirmation checkbox before high/critical requests can be approved
 - 🧭 **Multi-chain foundation** — HD-derived Tron, Solana, Bitcoin, Cosmos SDK, TON, and Aptos accounts; Tron/Solana/Bitcoin/Cosmos/Aptos support native balance/send flows, TON has Wallet V4-derived receive addresses, toncenter-compatible balance reads, active Wallet V4R2 `seqno` lookup, local BOC signing, `sendBoc` broadcast, and pending TON transfer history, Cosmos signs ATOM/OSMO transfers, staking delegate/undelegate/redelegate, rewards-withdraw, and governance vote transactions with SIGN_MODE_DIRECT via Cosmos REST, simulate-based gas/fee estimation, network metadata for bech32 prefix + native denom, read-only multi-denom bank balance, staking delegation overview, in-flight redelegation cooldown display with transitive redelegation blocking, validator discovery with commission/status/max-rate/change-rate/self-delegation/slashing risk details and actionable risk guidance, read-only governance proposal summaries with vote tally plus current-account vote option and staking power display, WalletConnect Cosmos namespace requests (`cosmos_chainId`, `cosmos_accounts`, `cosmos_getBalance`, approval-gated `cosmos_signDirect`/`cosmos_signAmino`) with approval summaries for common direct, Amino, IBC transfer, and unknown custom protobuf payloads, readable failed `raw_log` history errors, and IBC route memo prechecks, Shell/EVM ERC20, Tron TRC20, and Solana SPL token info/add/balance/send flows share the token provider registry; Bitcoin sends include UTXO coin control with sorting, labels, and persistent locks, fee priority presets, manual sat/vB fee rate, address reuse warnings, opt-in RBF, fee-bump replacement, receiver-side multi-parent CPFP with package fee-rate targeting and mempool policy checks, selected UTXO details, fee, change, dust preview, change/dust confirmation, Esplora transaction links, and remote Esplora history; Aptos uses SLIP-10 Ed25519 derivation, CoinStore balance reads, BCS RawTransaction signing, live ledger chain-id reads before signing, sequence/gas/expiration plus amount+max-gas balance preflight, unfunded-account errors, local pending history, REST status polling, and a gated `window.aptos` provider that only submits preview-recognized native APT transfer payloads with approval risk details
 - 🔌 **dApp connectivity foundation** — injected `window.shella` + EIP-1193-compatible `window.ethereum` bridge for connect / read-only RPC / chain switching
 - ⚡ **Manifest V3** — service worker background, strict CSP, no eval
@@ -62,6 +65,14 @@ Load the project root as an **unpacked extension** in `chrome://extensions` (ena
 
 > **Note:** the development build uses inline sourcemaps, so `dist/background.js` can look several MB locally. The production build (`npm run build:prod`) is the real release artifact and is kept under CI size guard.
 > **Security note:** dApp connectivity now requires `http://*/*` + `https://*/*` host access so the provider bridge can be injected into web pages. No third-party analytics, remote scripts, or broad extension permissions were added beyond `storage` and `alarms`.
+
+### Portfolio Guard and Connect Center
+
+The popup home calls `GET_PORTFOLIO_SNAPSHOT` after the normal wallet snapshot. It reads only native balances for the active network plus networks where the user has explicitly added watched tokens, applies per-network timeouts, and keeps failures local to the affected network row. Watched token balances remain explicit opt-in and are not discovered by scanning third-party indexers.
+
+Settings calls `GET_DAPP_SESSIONS_SNAPSHOT` to show local connected-site grants, WalletConnect sessions, and TonConnect sessions in a single permission center. `REVOKE_DAPP_SESSION` routes revocation to the correct underlying store without migrating storage formats.
+
+High and critical approval requests render a risk confirmation checkbox and keep the approve button disabled until the user explicitly confirms the decoded details.
 
 ### WalletConnect smoke
 
@@ -131,18 +142,9 @@ The wallet ships with four preset networks:
 | `testnet` | Shell Testnet | 10 | `https://rpc.testnet.shell.network` |
 | `mainnet` | Shell Mainnet | 100000 | `https://rpc.mainnet.shell.network` |
 
-### Connecting to SG3 testnet via SSH tunnel (recommended for development)
+### Connecting to a local testnet RPC
 
-The SG3 testnet node exposes RPC on port 8545. Since the wallet only accepts
-HTTP for `localhost`, forward the port locally before loading the extension:
-
-```bash
-# Keep this running in a separate terminal
-ssh -N -L 8545:127.0.0.1:8545 root@47.237.195.95 \
-  -i ~/.ssh/shell-testnet-sg-20260504035712.pem
-```
-
-Then in the wallet popup:
+If you run or forward a Shell testnet RPC locally, load the extension and then:
 
 1. Open **Settings → Network** and select **Shell Testnet — local (10, localhost)**.
 2. The wallet will probe `shell_getNodeInfo` on boot and display the node version,
@@ -179,7 +181,7 @@ If chain IDs mismatch a different warning prompts you to switch networks.
 
 ## Dependencies
 
-- [`shell-sdk`](https://github.com/LucienSong/shell-sdk) — ML-DSA-65 adapter, ShellSigner, provider, tx builders
+- [`shell-sdk`](https://github.com/ShellDAO/shell-sdk) — ML-DSA-65 adapter, ShellSigner, provider, tx builders
 - [`@noble/hashes`](https://github.com/paulmillr/noble-hashes) — Argon2id KDF (pure JS)
 - [`@noble/ciphers`](https://github.com/paulmillr/noble-ciphers) — XChaCha20-Poly1305 (pure JS)
 - [`viem`](https://viem.sh) — Ethereum primitives (hex, encoding)
