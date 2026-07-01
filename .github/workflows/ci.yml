@@ -70,4 +70,4 @@ jobs:
 
       - name: TonConnect smoke
         if: matrix.node == 20
-        run: npm run smoke:tonconnect && npm run check:tonconnect-smoke
+        run: xvfb-run -a npm run smoke:tonconnect && npm run check:tonconnect-smoke
