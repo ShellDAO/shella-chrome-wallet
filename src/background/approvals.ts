@@ -38,6 +38,7 @@ export async function requestUserApproval(
     const timeoutId = setTimeout(() => {
       settleApprovalRequest(requestId, false);
     }, APPROVAL_TTL_MS);
+    (timeoutId as { unref?: () => void }).unref?.();
     pendingApprovals.set(requestId, { request, resolve, timeoutId });
 
     chrome.windows.create(
