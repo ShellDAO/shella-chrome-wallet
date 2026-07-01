@@ -66,7 +66,7 @@ jobs:
 
       - name: Extension smoke
         if: matrix.node == 20
-        run: npm run smoke:extension && npm run check:extension-smoke
+        run: xvfb-run -a npm run smoke:extension && npm run check:extension-smoke
 
       - name: TonConnect smoke
         if: matrix.node == 20
