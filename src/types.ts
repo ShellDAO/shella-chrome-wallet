@@ -433,6 +433,7 @@ export interface WalletState {
   walletConnectSessions: WalletConnectSession[];
   tonConnectSessions: TonConnectSession[];
   walletConnectPairings: WalletConnectPairing[];
+  providerDisabledOrigins?: string[];
   txQueue: WalletTxRecord[];
   watchedTokens: WatchedToken[];
   bitcoinUtxoPreferences: BitcoinUtxoPreference[];

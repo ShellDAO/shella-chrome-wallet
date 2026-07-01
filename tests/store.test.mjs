@@ -56,6 +56,9 @@ const {
   getConnectedSites,
   addConnectedSite,
   removeConnectedSite,
+  getProviderDisabledOrigins,
+  setProviderOriginDisabled,
+  clearProviderDisabledOrigins,
   getWalletConnectSessions,
   upsertWalletConnectSession,
   removeWalletConnectSession,
@@ -65,6 +68,9 @@ const {
   getWalletConnectPairings,
   upsertWalletConnectPairing,
   removeWalletConnectPairing,
+  clearWalletConnectPairings,
+  clearWalletConnectSdkStorage,
+  pruneWalletConnectSdkStorage,
   getPendingKeyRotations,
   addPendingKeyRotation,
   setPendingKeyRotations,
@@ -311,6 +317,26 @@ describe('store', () => {
     assert.equal((await getConnectedSites()).length, 1);
   });
 
+  test('provider disabled origins are normalized, deduped, and clearable', async () => {
+    assert.deepEqual(await getProviderDisabledOrigins(), []);
+    assert.deepEqual(
+      await setProviderOriginDisabled('https://dapp.example/path?q=1', true),
+      ['https://dapp.example'],
+    );
+    assert.deepEqual(
+      await setProviderOriginDisabled('https://dapp.example/other', true),
+      ['https://dapp.example'],
+    );
+    await assert.rejects(
+      () => setProviderOriginDisabled('chrome-extension://id/popup.html', true),
+      /valid http\(s\) URL/,
+    );
+    assert.deepEqual(await setProviderOriginDisabled('https://dapp.example', false), []);
+    await setProviderOriginDisabled('http://localhost:3000', true);
+    await clearProviderDisabledOrigins();
+    assert.deepEqual(await getProviderDisabledOrigins(), []);
+  });
+
   test('walletconnect sessions can be added, replaced, removed, and expire', async () => {
     const session = {
       topic: 'topic-1',
@@ -389,6 +415,44 @@ describe('store', () => {
 
     await removeWalletConnectPairing('pairing-topic');
     assert.deepEqual(await getWalletConnectPairings(), []);
+  });
+
+  test('walletconnect pairings and sdk storage can be cleared without deleting wallet keys', async () => {
+    await upsertWalletConnectPairing({
+      topic: 'pairing-topic',
+      uri: 'wc:pairing-topic@2?relay-protocol=irn&symKey=abc',
+      relayProtocol: 'irn',
+      symKey: 'abc',
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+    });
+    await chrome.storage.local.set({
+      'walletconnect:client': { topic: 'pairing-topic' },
+      'walletconnect:history': ['request'],
+      unrelatedWalletKey: 'keep',
+    });
+
+    await clearWalletConnectPairings();
+    await clearWalletConnectSdkStorage();
+
+    assert.deepEqual(await getWalletConnectPairings(), []);
+    const stored = await chrome.storage.local.get(['walletconnect:client', 'walletconnect:history', 'unrelatedWalletKey']);
+    assert.equal(stored['walletconnect:client'], undefined);
+    assert.equal(stored['walletconnect:history'], undefined);
+    assert.equal(stored.unrelatedWalletKey, 'keep');
+  });
+
+  test('walletconnect sdk storage prune caps only walletconnect-prefixed keys', async () => {
+    const entries = Object.fromEntries(
+      Array.from({ length: 105 }, (_entry, index) => [`walletconnect:${String(index).padStart(3, '0')}`, index]),
+    );
+    await chrome.storage.local.set({ ...entries, keep: 'value' });
+
+    const result = await pruneWalletConnectSdkStorage(100);
+    assert.deepEqual(result, { removed: 5, remaining: 100 });
+    const all = await chrome.storage.local.get(null);
+    assert.equal(Object.keys(all).filter((key) => key.startsWith('walletconnect:')).length, 100);
+    assert.equal(all.keep, 'value');
   });
 
   test('portfolio snapshot cache can be stored, read, and cleared', async () => {

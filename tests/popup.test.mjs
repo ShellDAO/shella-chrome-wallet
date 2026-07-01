@@ -3,7 +3,12 @@
  * Mocks chrome.runtime and a minimal DOM to let popup.js boot and render.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, test, before } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Minimal DOM mock ──────────────────────────────────────────────────────────
 
@@ -121,6 +126,14 @@ describe('popup', async () => {
   test('rendered HTML contains a toast placeholder', () => {
     const html = appEl.innerHTML;
     assert.ok(html.includes('toast'), 'toast element should be present in rendered output');
+  });
+
+  test('popup view rendering uses the Trusted Types sink wrapper only', () => {
+    const source = readFileSync(join(__dirname, '../src/popup.ts'), 'utf8');
+    const rawInnerHtmlWrites = [...source.matchAll(/\.innerHTML\s*=/g)].length;
+    assert.equal(rawInnerHtmlWrites, 1);
+    assert.match(source, /function setTrustedViewHtml/);
+    assert.match(source, /popupTrustedTypes\?\.createPolicy\('shella-popup'/);
   });
 
   test('truncate shortens long addresses with ellipsis', async () => {

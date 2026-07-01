@@ -106,6 +106,12 @@ import {
   sendAptosTransfer,
 } from './chains/aptos.js';
 import { getChainCapabilities } from './chains/capabilities.js';
+import {
+  getApprovalRequest,
+  handleApprovalWindowRemoved,
+  requestUserApproval,
+  resolveApprovalRequest,
+} from './background/approvals.js';
 import { createKeystore, decryptKeystore, decryptHdSeed, encryptHdSeed, encryptMnemonic, decryptMnemonic } from './crypto.js';
 import {
   KNOWN_NETWORKS,
@@ -115,9 +121,12 @@ import {
   addWatchedToken,
   clearAllData,
   clearConnectedSites,
+  clearProviderDisabledOrigins,
   clearSessionState,
   clearTonConnectSessions,
+  clearWalletConnectPairings,
   clearWalletConnectSessions,
+  clearWalletConnectSdkStorage,
   getAccounts,
   getAutoLockMinutes,
   getBitcoinUtxoPreferences,
@@ -127,6 +136,7 @@ import {
   getLastActiveAccountId,
   getLastActiveAddress,
   getPendingKeyRotations,
+  getProviderDisabledOrigins,
   getNetwork,
   getTonConnectSessions,
   getPortfolioSnapshotCache,
@@ -149,6 +159,7 @@ import {
   setNetwork,
   setPendingKeyRotations,
   setPortfolioSnapshotCache,
+  setProviderOriginDisabled,
   setSessionState,
   setWalletConnectConfig,
   setWatchedTokenHidden,
@@ -166,7 +177,6 @@ import type {
   DappRequestMessage,
   ChainKind,
   Network,
-  ApprovalRequest,
   SendTransactionParams,
   StoredAccount,
   TonConnectFeature,
@@ -198,8 +208,6 @@ import type {
 
 const AUTO_LOCK_ALARM = 'shella-auto-lock';
 const TX_POLL_ALARM = 'shella-tx-poll';
-// Approval requests expire after this many ms to prevent stale popup resolution.
-const APPROVAL_TTL_MS = 10 * 60 * 1000;
 const TON_PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const TONCONNECT_DAPP_METHODS = ['tonconnect_connect', 'tonconnect_restoreConnection', 'tonconnect_send'];
 const APTOS_DAPP_METHODS = ['aptos_connect', 'aptos_account', 'aptos_network', 'aptos_getBalance', 'aptos_signAndSubmitTransaction'];
@@ -221,14 +229,6 @@ interface WalletConnectBridge {
   pair(uri: string, localPairing: WalletConnectPairing): Promise<WalletConnectPairing>;
   getStatus(): WalletConnectRelayStatus;
 }
-
-const pendingApprovals = new Map<
-  string,
-  {
-    request: ApprovalRequest;
-    resolve: (approved: boolean) => void;
-  }
->();
 
 // In-memory nonce tracker: prevents concurrent sendTransaction calls from
 // allocating the same nonce before the first is committed to txQueue storage.
@@ -607,6 +607,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
+chrome.windows.onRemoved.addListener((windowId) => {
+  handleApprovalWindowRemoved(windowId);
+});
+
 const CONTENT_SCRIPT_MESSAGE_TYPES = new Set(['DAPP_REQUEST']);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -626,7 +630,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 function isExtensionPageSender(sender?: chrome.runtime.MessageSender): boolean {
-  if (!sender) return true;
+  if (!sender) return false;
   const extensionUrl = chrome.runtime.getURL('');
   return sender.id === chrome.runtime.id
     && typeof sender.url === 'string'
@@ -989,6 +993,15 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return { ok: true };
     case 'GET_CONNECTED_SITES':
       return { sites: await getConnectedSites() };
+    case 'GET_PROVIDER_DISABLED_ORIGINS':
+      return { origins: await getProviderDisabledOrigins() };
+    case 'SET_PROVIDER_ORIGIN_DISABLED':
+      return {
+        origins: await setProviderOriginDisabled(
+          requireString(msg.origin, 'origin'),
+          optionalBoolean(msg.disabled) ?? false,
+        ),
+      };
     case 'ADD_CONNECTED_SITE':
       await addConnectedSite({
         origin: normalizeOrigin(requireString(msg.origin, 'origin')),
@@ -1020,7 +1033,10 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'DISCONNECT_ALL_SITES':
       await Promise.all([
         clearConnectedSites(),
+        clearProviderDisabledOrigins(),
         clearWalletConnectSessions(),
+        clearWalletConnectPairings(),
+        clearWalletConnectSdkStorage(),
         clearTonConnectSessions(),
       ]);
       return { ok: true };
@@ -5528,58 +5544,6 @@ async function getConnectedPermission(origin: string): Promise<ConnectedSitePerm
   const normalized = normalizeOrigin(origin);
   const sites = await getConnectedSites();
   return sites.find((site) => site.origin === normalized) ?? null;
-}
-
-// WALLET-L1: use cryptographically secure RNG for all request/approval IDs.
-function generateRequestId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function requestUserApproval(
-  input: Omit<ApprovalRequest, 'id'>,
-): Promise<boolean> {
-  const requestId = generateRequestId();
-
-  const request: ApprovalRequest = { id: requestId, ...input };
-
-  return new Promise<boolean>((resolve, reject) => {
-    pendingApprovals.set(requestId, { request, resolve });
-
-    chrome.windows.create(
-      {
-        url: chrome.runtime.getURL(`popup.html?approvalId=${encodeURIComponent(requestId)}`),
-        type: 'popup',
-        width: 420,
-        height: 680,
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          pendingApprovals.delete(requestId);
-          reject(new Error(chrome.runtime.lastError.message));
-        }
-      },
-    );
-  });
-}
-
-function getApprovalRequest(requestId: string): ApprovalRequest {
-  const pending = pendingApprovals.get(requestId);
-  if (!pending) throw new Error('Approval request not found');
-  return pending.request;
-}
-
-function resolveApprovalRequest(requestId: string, approved: boolean): { ok: true } {
-  const pending = pendingApprovals.get(requestId);
-  if (!pending) throw new Error('Approval request not found');
-  if (Date.now() - pending.request.createdAt > APPROVAL_TTL_MS) {
-    pendingApprovals.delete(requestId);
-    throw new Error('Approval request has expired');
-  }
-  pendingApprovals.delete(requestId);
-  pending.resolve(approved);
-  return { ok: true };
 }
 
 function ensureConnected(
