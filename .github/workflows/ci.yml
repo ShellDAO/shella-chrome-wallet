@@ -59,3 +59,15 @@ jobs:
 
       - name: Enforce bundle size
         run: npm run check:bundle-size
+
+      - name: Install Playwright Chromium
+        if: matrix.node == 20
+        run: npx playwright install --with-deps chromium
+
+      - name: Extension smoke
+        if: matrix.node == 20
+        run: npm run smoke:extension && npm run check:extension-smoke
+
+      - name: TonConnect smoke
+        if: matrix.node == 20
+        run: npm run smoke:tonconnect && npm run check:tonconnect-smoke

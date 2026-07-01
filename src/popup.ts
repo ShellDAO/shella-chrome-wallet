@@ -39,6 +39,19 @@ import type {
 import { getChainCapabilities } from './chains/capabilities.js';
 import { KNOWN_NETWORKS } from './store.js';
 
+type TrustedTypesPolicy = {
+  createHTML(input: string): unknown;
+};
+
+type TrustedTypesFactory = {
+  createPolicy(name: string, rules: { createHTML(input: string): string }): TrustedTypesPolicy;
+};
+
+const popupTrustedTypes = (globalThis as { trustedTypes?: TrustedTypesFactory }).trustedTypes;
+const popupHtmlPolicy = popupTrustedTypes?.createPolicy('shella-popup', {
+  createHTML: (input: string) => input,
+}) ?? null;
+
 type View =
   | 'loading'
   | 'welcome'
@@ -84,6 +97,7 @@ interface AppState {
   nonce: number | null;
   autoLockMinutes: number;
   connectedSites: ConnectedSitePermission[];
+  providerDisabledOrigins: string[];
   walletConnectConfig: WalletConnectConfig;
   walletConnectSessions: WalletConnectSession[];
   tonConnectSessions: TonConnectSession[];
@@ -357,6 +371,7 @@ const state: AppState = {
   nonce: null,
   autoLockMinutes: 15,
   connectedSites: [],
+  providerDisabledOrigins: [],
   walletConnectConfig: { projectId: '', relayUrl: '' },
   walletConnectSessions: [],
   tonConnectSessions: [],
@@ -433,6 +448,12 @@ function escapeHtml(value: unknown): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function setTrustedViewHtml(element: HTMLElement, markup: string): void {
+  element.innerHTML = popupHtmlPolicy
+    ? popupHtmlPolicy.createHTML(markup) as string
+    : markup;
 }
 
 function renderError(): string {
@@ -663,7 +684,7 @@ function render(): void {
   
   // Create container for view content
   const viewContainer = document.createElement('div');
-  viewContainer.innerHTML = views[state.view]?.() ?? renderLoading();
+  setTrustedViewHtml(viewContainer, views[state.view]?.() ?? renderLoading());
   appElement.appendChild(viewContainer);
   
   attachHandlers();
@@ -2148,22 +2169,28 @@ function renderSwitchAccount(): string {
 }
 
 function renderConnectedDappsCenter(): string {
-  const rows = getRenderedDappSessions().map((session) => `
-    <div class="site-item">
-      <div class="site-item-main">
-        <div class="site-origin">${escapeHtml(session.origin)}</div>
-        <div class="site-meta">
-          <span>${escapeHtml(session.protocol)}</span>
-          <span>${escapeHtml(session.accounts.map((account) => truncate(account, 8, 6)).join(', ') || 'No accounts')}</span>
-          <span>${escapeHtml(session.chains.join(', ') || 'No chains')}</span>
-          <span>${escapeHtml(session.methods.join(', ') || 'No methods')}</span>
-          <span>${session.expiresAt ? `Expires ${escapeHtml(formatWalletConnectExpiry(session.expiresAt))}` : `Last used ${escapeHtml(formatTimestamp(session.lastUsedAt))}`}</span>
-          ${session.riskFlags.length > 0 ? `<span class="site-risk">${escapeHtml(session.riskFlags.join(' · '))}</span>` : ''}
+  const disabledOrigins = new Set(state.providerDisabledOrigins);
+  const rows = getRenderedDappSessions().map((session) => {
+    const providerDisabled = disabledOrigins.has(session.origin);
+    return `
+      <div class="site-item">
+        <div class="site-item-main">
+          <div class="site-origin">${escapeHtml(session.origin)}</div>
+          <div class="site-meta">
+            <span>${escapeHtml(session.protocol)}</span>
+            <span>${escapeHtml(session.accounts.map((account) => truncate(account, 8, 6)).join(', ') || 'No accounts')}</span>
+            <span>${escapeHtml(session.chains.join(', ') || 'No chains')}</span>
+            <span>${escapeHtml(session.methods.join(', ') || 'No methods')}</span>
+            <span>${session.expiresAt ? `Expires ${escapeHtml(formatWalletConnectExpiry(session.expiresAt))}` : `Last used ${escapeHtml(formatTimestamp(session.lastUsedAt))}`}</span>
+            <span>${providerDisabled ? 'Provider disabled' : 'Provider enabled'}</span>
+            ${session.riskFlags.length > 0 ? `<span class="site-risk">${escapeHtml(session.riskFlags.join(' · '))}</span>` : ''}
+          </div>
         </div>
+        <button class="btn-secondary btn-provider-origin-toggle" data-origin="${escapeHtml(session.origin)}" data-disabled="${providerDisabled ? 'false' : 'true'}">${providerDisabled ? 'Enable provider' : 'Disable provider'}</button>
+        <button class="btn-secondary btn-dapp-session-revoke" data-session-id="${escapeHtml(session.id)}">Disconnect</button>
       </div>
-      <button class="btn-secondary btn-dapp-session-revoke" data-session-id="${escapeHtml(session.id)}">Disconnect</button>
-    </div>
-  `);
+    `;
+  });
   if (rows.length === 0) return '<div class="empty-panel compact-empty">No connected dApps yet</div>';
   return `
     ${rows.join('')}
@@ -4334,6 +4361,21 @@ function attachHandlers(): void {
         }
       });
     });
+    document.querySelectorAll<HTMLButtonElement>('.btn-provider-origin-toggle').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const origin = button.dataset.origin;
+        const disabled = button.dataset.disabled === 'true';
+        if (!origin) return;
+        try {
+          const result = await send<{ origins: string[] }>('SET_PROVIDER_ORIGIN_DISABLED', { origin, disabled });
+          state.providerDisabledOrigins = result.origins;
+          render();
+          showToast(disabled ? 'Provider disabled for site' : 'Provider enabled for site');
+        } catch (err) {
+          showToast((err as Error).message, true);
+        }
+      });
+    });
     document.querySelectorAll<HTMLButtonElement>('.btn-site-revoke').forEach((button) => {
       button.addEventListener('click', async () => {
         const origin = button.dataset.origin;
@@ -4391,6 +4433,7 @@ function attachHandlers(): void {
       try {
         await send('DISCONNECT_ALL_SITES');
         state.connectedSites = [];
+        state.providerDisabledOrigins = [];
         state.walletConnectSessions = [];
         state.tonConnectSessions = [];
         state.dappSessions = [];
@@ -4454,6 +4497,7 @@ async function refreshWalletData(): Promise<void> {
   state.watchedTokens = snapshot.wallet.watchedTokens ?? [];
   state.autoLockMinutes = snapshot.wallet.autoLockMinutes;
   state.connectedSites = snapshot.wallet.connectedSites;
+  state.providerDisabledOrigins = snapshot.wallet.providerDisabledOrigins ?? [];
   state.walletConnectConfig = snapshot.wallet.walletConnectConfig ?? { projectId: '', relayUrl: '' };
   state.walletConnectProjectId = state.walletConnectConfig.projectId;
   state.walletConnectRelayUrl = state.walletConnectConfig.relayUrl;
@@ -4783,6 +4827,7 @@ async function boot(): Promise<void> {
   state.txQueue = snapshot.wallet.txQueue;
   state.autoLockMinutes = snapshot.wallet.autoLockMinutes;
   state.connectedSites = snapshot.wallet.connectedSites;
+  state.providerDisabledOrigins = snapshot.wallet.providerDisabledOrigins ?? [];
   state.walletConnectConfig = snapshot.wallet.walletConnectConfig ?? { projectId: '', relayUrl: '' };
   state.walletConnectProjectId = state.walletConnectConfig.projectId;
   state.walletConnectRelayUrl = state.walletConnectConfig.relayUrl;

@@ -19,28 +19,39 @@ function injectInpageScript(): void {
   script.onload = () => script.remove();
 }
 
-window.addEventListener('message', (event: MessageEvent<ProviderRequestPayload>) => {
-  // Reject messages from frames or windows with a different origin to prevent
-  // nested-iframe spoofing attacks.
-  if (event.source !== window) return;
-  if (event.origin !== window.location.origin) return;
-  if (!event.data || event.data.target !== REQUEST_TARGET || typeof event.data.id !== 'string') return;
+async function isProviderDisabledForOrigin(origin: string): Promise<boolean> {
+  const { providerDisabledOrigins } = await chrome.storage.local.get('providerDisabledOrigins');
+  return Array.isArray(providerDisabledOrigins) && providerDisabledOrigins.includes(origin);
+}
 
-  const { id, method, params } = event.data;
-  chrome.runtime.sendMessage(
-    {
-      type: 'DAPP_REQUEST',
-      origin: window.location.origin,
-      method,
-      params: Array.isArray(params) ? params : [],
-    },
-    (response: unknown & { error?: string }) => {
-      const payload = response?.error
-        ? { target: RESPONSE_TARGET, id, error: response.error }
-        : { target: RESPONSE_TARGET, id, result: response };
-      window.postMessage(payload, window.location.origin);
-    },
-  );
+function startProviderBridge(): void {
+  window.addEventListener('message', (event: MessageEvent<ProviderRequestPayload>) => {
+    // Reject messages from frames or windows with a different origin to prevent
+    // nested-iframe spoofing attacks.
+    if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || event.data.target !== REQUEST_TARGET || typeof event.data.id !== 'string') return;
+
+    const { id, method, params } = event.data;
+    chrome.runtime.sendMessage(
+      {
+        type: 'DAPP_REQUEST',
+        origin: window.location.origin,
+        method,
+        params: Array.isArray(params) ? params : [],
+      },
+      (response: unknown & { error?: string }) => {
+        const payload = response?.error
+          ? { target: RESPONSE_TARGET, id, error: response.error }
+          : { target: RESPONSE_TARGET, id, result: response };
+        window.postMessage(payload, window.location.origin);
+      },
+    );
+  });
+
+  injectInpageScript();
+}
+
+void isProviderDisabledForOrigin(window.location.origin).then((disabled) => {
+  if (!disabled) startProviderBridge();
 });
-
-injectInpageScript();

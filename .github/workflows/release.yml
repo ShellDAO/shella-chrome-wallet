@@ -61,6 +61,15 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Extension smoke
+        run: npm run smoke:extension && npm run check:extension-smoke
+
+      - name: TonConnect smoke
+        run: npm run smoke:tonconnect && npm run check:tonconnect-smoke
+
       - name: Verify release metadata
         run: npm run check:release-metadata
 
