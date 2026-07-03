@@ -11,6 +11,7 @@ import type {
   MultichainAddress,
   Network,
   PendingKeyRotation,
+  PortfolioSnapshot,
   SessionState,
   StoredAccount,
   TonConnectFeature,
@@ -25,7 +26,6 @@ import type {
 
 export const KNOWN_NETWORKS: Record<string, Network> = {
   devnet: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
-  // Shell Testnet (SG3) via SSH tunnel: ssh -L 8545:127.0.0.1:8545 root@47.237.195.95
   localdev: { name: 'Shell Testnet (local)', chainId: 10, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
   testnet: { name: 'Shell Testnet', chainId: 10, rpcUrl: 'https://rpc.testnet.shell.network', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
   mainnet: { name: 'Shell Mainnet', chainId: 100000, rpcUrl: 'https://rpc.mainnet.shell.network', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
@@ -86,6 +86,22 @@ function normalizeNetwork(value: unknown): Network {
       : 6;
   }
   return normalized;
+}
+
+function normalizeHttpOrigin(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProviderDisabledOrigins(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(normalizeHttpOrigin).filter((origin): origin is string => origin !== null))].slice(0, 500);
 }
 
 function normalizeConnectedSites(
@@ -438,6 +454,24 @@ function normalizeWalletConnectPairings(value: unknown, now = Date.now()): { pai
   return { pairings, migrated };
 }
 
+function normalizePortfolioSnapshotCache(value: unknown): PortfolioSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<PortfolioSnapshot>;
+  if (typeof candidate.accountId !== 'string' && candidate.accountId !== null) return null;
+  if (typeof candidate.generatedAt !== 'number' || !Number.isFinite(candidate.generatedAt)) return null;
+  if (!Array.isArray(candidate.networks)) return null;
+  return {
+    accountId: candidate.accountId ?? null,
+    generatedAt: candidate.generatedAt,
+    networks: candidate.networks.filter((network) =>
+      network &&
+      typeof network === 'object' &&
+      typeof (network as { chainId?: unknown }).chainId === 'number' &&
+      typeof (network as { networkName?: unknown }).networkName === 'string',
+    ) as PortfolioSnapshot['networks'],
+  };
+}
+
 function normalizeWalletConnectConfig(value: unknown): WalletConnectConfig {
   if (!value || typeof value !== 'object') return DEFAULT_WALLETCONNECT_CONFIG;
   const candidate = value as Partial<WalletConnectConfig>;
@@ -477,6 +511,7 @@ function normalizeBitcoinUtxoPreferences(value: unknown): { preferences: Bitcoin
 }
 
 export async function initStore(): Promise<void> {
+  await pruneWalletConnectSdkStorage();
   const existing = await chrome.storage.local.get([
     'accountModelVersion',
     'network',
@@ -487,6 +522,7 @@ export async function initStore(): Promise<void> {
     'walletConnectSessions',
     'tonConnectSessions',
     'walletConnectPairings',
+    'providerDisabledOrigins',
     'txQueue',
     'watchedTokens',
     'bitcoinUtxoPreferences',
@@ -497,6 +533,7 @@ export async function initStore(): Promise<void> {
     const { sessions: walletConnectSessions } = normalizeWalletConnectSessions(existing.walletConnectSessions);
     const { sessions: tonConnectSessions } = normalizeTonConnectSessions(existing.tonConnectSessions);
     const { pairings: walletConnectPairings } = normalizeWalletConnectPairings(existing.walletConnectPairings);
+    const providerDisabledOrigins = normalizeProviderDisabledOrigins(existing.providerDisabledOrigins);
     const { preferences: bitcoinUtxoPreferences } = normalizeBitcoinUtxoPreferences(existing.bitcoinUtxoPreferences);
     await chrome.storage.local.set({
       network: DEFAULT_NETWORK,
@@ -508,6 +545,7 @@ export async function initStore(): Promise<void> {
       walletConnectSessions,
       tonConnectSessions,
       walletConnectPairings,
+      providerDisabledOrigins,
       txQueue: [],
       watchedTokens,
       bitcoinUtxoPreferences,
@@ -524,6 +562,7 @@ export async function initStore(): Promise<void> {
   const { sessions: walletConnectSessions, migrated: walletConnectSessionsMigrated } = normalizeWalletConnectSessions(existing.walletConnectSessions);
   const { sessions: tonConnectSessions, migrated: tonConnectSessionsMigrated } = normalizeTonConnectSessions(existing.tonConnectSessions);
   const { pairings: walletConnectPairings, migrated: walletConnectPairingsMigrated } = normalizeWalletConnectPairings(existing.walletConnectPairings);
+  const providerDisabledOrigins = normalizeProviderDisabledOrigins(existing.providerDisabledOrigins);
   const { preferences: bitcoinUtxoPreferences, migrated: bitcoinUtxoPreferencesMigrated } = normalizeBitcoinUtxoPreferences(existing.bitcoinUtxoPreferences);
 
   if (
@@ -536,6 +575,7 @@ export async function initStore(): Promise<void> {
     !existing.walletConnectSessions ||
     !existing.tonConnectSessions ||
     !existing.walletConnectPairings ||
+    !existing.providerDisabledOrigins ||
     !existing.txQueue ||
     !existing.watchedTokens ||
     !existing.bitcoinUtxoPreferences ||
@@ -547,6 +587,7 @@ export async function initStore(): Promise<void> {
     tonConnectSessionsMigrated ||
     walletConnectPairings.length !== (Array.isArray(existing.walletConnectPairings) ? existing.walletConnectPairings.length : 0) ||
     walletConnectPairingsMigrated ||
+    providerDisabledOrigins.length !== (Array.isArray(existing.providerDisabledOrigins) ? existing.providerDisabledOrigins.length : 0) ||
     watchedTokens.length !== (Array.isArray(existing.watchedTokens) ? existing.watchedTokens.length : 0) ||
     tokensMigrated ||
     bitcoinUtxoPreferences.length !== (Array.isArray(existing.bitcoinUtxoPreferences) ? existing.bitcoinUtxoPreferences.length : 0) ||
@@ -562,6 +603,7 @@ export async function initStore(): Promise<void> {
       walletConnectSessions,
       tonConnectSessions,
       walletConnectPairings,
+      providerDisabledOrigins,
       txQueue: existing.txQueue ?? [],
       watchedTokens,
       bitcoinUtxoPreferences,
@@ -580,6 +622,7 @@ export async function getWalletState(): Promise<WalletState> {
     'walletConnectSessions',
     'tonConnectSessions',
     'walletConnectPairings',
+    'providerDisabledOrigins',
     'txQueue',
     'watchedTokens',
     'bitcoinUtxoPreferences',
@@ -588,6 +631,7 @@ export async function getWalletState(): Promise<WalletState> {
   const { sessions: walletConnectSessions } = normalizeWalletConnectSessions(data.walletConnectSessions);
   const { sessions: tonConnectSessions } = normalizeTonConnectSessions(data.tonConnectSessions);
   const { pairings: walletConnectPairings } = normalizeWalletConnectPairings(data.walletConnectPairings);
+  const providerDisabledOrigins = normalizeProviderDisabledOrigins(data.providerDisabledOrigins);
   const { preferences: bitcoinUtxoPreferences } = normalizeBitcoinUtxoPreferences(data.bitcoinUtxoPreferences);
   const accounts = Array.isArray(data.accounts) ? data.accounts.map((account, index) => normalizeStoredAccount(account as StoredAccount, index)) : [];
   return {
@@ -600,6 +644,7 @@ export async function getWalletState(): Promise<WalletState> {
     walletConnectSessions,
     tonConnectSessions,
     walletConnectPairings,
+    providerDisabledOrigins,
     txQueue: data.txQueue ?? [],
     watchedTokens,
     bitcoinUtxoPreferences,
@@ -730,6 +775,26 @@ export async function clearConnectedSites(): Promise<void> {
   await chrome.storage.local.set({ connectedSites: [] });
 }
 
+export async function getProviderDisabledOrigins(): Promise<string[]> {
+  const { providerDisabledOrigins } = await chrome.storage.local.get('providerDisabledOrigins');
+  return normalizeProviderDisabledOrigins(providerDisabledOrigins);
+}
+
+export async function setProviderOriginDisabled(origin: string, disabled: boolean): Promise<string[]> {
+  const normalized = normalizeHttpOrigin(origin);
+  if (!normalized) throw new Error('Origin must be a valid http(s) URL');
+  const origins = await getProviderDisabledOrigins();
+  const next = disabled
+    ? [...new Set([normalized, ...origins])].slice(0, 500)
+    : origins.filter((entry) => entry !== normalized);
+  await chrome.storage.local.set({ providerDisabledOrigins: next });
+  return next;
+}
+
+export async function clearProviderDisabledOrigins(): Promise<void> {
+  await chrome.storage.local.set({ providerDisabledOrigins: [] });
+}
+
 export async function getWalletConnectSessions(): Promise<WalletConnectSession[]> {
   const { walletConnectSessions } = await chrome.storage.local.get('walletConnectSessions');
   return normalizeWalletConnectSessions(walletConnectSessions).sessions;
@@ -795,6 +860,37 @@ export async function removeWalletConnectPairing(topic: string): Promise<void> {
   await chrome.storage.local.set({
     walletConnectPairings: pairings.filter((pairing) => pairing.topic !== topic),
   });
+}
+
+export async function clearWalletConnectPairings(): Promise<void> {
+  await chrome.storage.local.set({ walletConnectPairings: [] });
+}
+
+export async function clearWalletConnectSdkStorage(): Promise<void> {
+  const all = await chrome.storage.local.get(null);
+  const keys = Object.keys(all).filter((key) => key.startsWith('walletconnect:'));
+  if (keys.length > 0) await chrome.storage.local.remove(keys);
+}
+
+export async function pruneWalletConnectSdkStorage(maxKeys = 100): Promise<{ removed: number; remaining: number }> {
+  const all = await chrome.storage.local.get(null);
+  const keys = Object.keys(all).filter((key) => key.startsWith('walletconnect:')).sort();
+  const removable = keys.slice(maxKeys);
+  if (removable.length > 0) await chrome.storage.local.remove(removable);
+  return { removed: removable.length, remaining: keys.length - removable.length };
+}
+
+export async function getPortfolioSnapshotCache(): Promise<PortfolioSnapshot | null> {
+  const { portfolioSnapshotCache } = await chrome.storage.local.get('portfolioSnapshotCache');
+  return normalizePortfolioSnapshotCache(portfolioSnapshotCache);
+}
+
+export async function setPortfolioSnapshotCache(portfolioSnapshotCache: PortfolioSnapshot): Promise<void> {
+  await chrome.storage.local.set({ portfolioSnapshotCache });
+}
+
+export async function clearPortfolioSnapshotCache(): Promise<void> {
+  await chrome.storage.local.remove('portfolioSnapshotCache');
 }
 
 export async function getWatchedTokens(): Promise<WatchedToken[]> {

@@ -106,6 +106,12 @@ import {
   sendAptosTransfer,
 } from './chains/aptos.js';
 import { getChainCapabilities } from './chains/capabilities.js';
+import {
+  getApprovalRequest,
+  handleApprovalWindowRemoved,
+  requestUserApproval,
+  resolveApprovalRequest,
+} from './background/approvals.js';
 import { createKeystore, decryptKeystore, decryptHdSeed, encryptHdSeed, encryptMnemonic, decryptMnemonic } from './crypto.js';
 import {
   KNOWN_NETWORKS,
@@ -115,9 +121,12 @@ import {
   addWatchedToken,
   clearAllData,
   clearConnectedSites,
+  clearProviderDisabledOrigins,
   clearSessionState,
   clearTonConnectSessions,
+  clearWalletConnectPairings,
   clearWalletConnectSessions,
+  clearWalletConnectSdkStorage,
   getAccounts,
   getAutoLockMinutes,
   getBitcoinUtxoPreferences,
@@ -127,8 +136,10 @@ import {
   getLastActiveAccountId,
   getLastActiveAddress,
   getPendingKeyRotations,
+  getProviderDisabledOrigins,
   getNetwork,
   getTonConnectSessions,
+  getPortfolioSnapshotCache,
   getTxQueue,
   getWalletState,
   getWalletConnectConfig,
@@ -147,6 +158,8 @@ import {
   setLastActiveAddress,
   setNetwork,
   setPendingKeyRotations,
+  setPortfolioSnapshotCache,
+  setProviderOriginDisabled,
   setSessionState,
   setWalletConnectConfig,
   setWatchedTokenHidden,
@@ -164,7 +177,6 @@ import type {
   DappRequestMessage,
   ChainKind,
   Network,
-  ApprovalRequest,
   SendTransactionParams,
   StoredAccount,
   TonConnectFeature,
@@ -196,12 +208,13 @@ import type {
 
 const AUTO_LOCK_ALARM = 'shella-auto-lock';
 const TX_POLL_ALARM = 'shella-tx-poll';
-// Approval requests expire after this many ms to prevent stale popup resolution.
-const APPROVAL_TTL_MS = 10 * 60 * 1000;
 const TON_PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const TONCONNECT_DAPP_METHODS = ['tonconnect_connect', 'tonconnect_restoreConnection', 'tonconnect_send'];
 const APTOS_DAPP_METHODS = ['aptos_connect', 'aptos_account', 'aptos_network', 'aptos_getBalance', 'aptos_signAndSubmitTransaction'];
 const PORTFOLIO_BALANCE_TIMEOUT_MS = 2500;
+const PORTFOLIO_STALE_AFTER_MS = 60 * 1000;
+const PORTFOLIO_EXPIRED_AFTER_MS = 10 * 60 * 1000;
+const PORTFOLIO_REFRESH_CONCURRENCY = 2;
 
 let currentSigner: ShellSigner | null = null;
 let currentTronPrivateKey: Uint8Array | null = null;
@@ -216,14 +229,6 @@ interface WalletConnectBridge {
   pair(uri: string, localPairing: WalletConnectPairing): Promise<WalletConnectPairing>;
   getStatus(): WalletConnectRelayStatus;
 }
-
-const pendingApprovals = new Map<
-  string,
-  {
-    request: ApprovalRequest;
-    resolve: (approved: boolean) => void;
-  }
->();
 
 // In-memory nonce tracker: prevents concurrent sendTransaction calls from
 // allocating the same nonce before the first is committed to txQueue storage.
@@ -602,6 +607,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
+chrome.windows.onRemoved.addListener((windowId) => {
+  handleApprovalWindowRemoved(windowId);
+});
+
 const CONTENT_SCRIPT_MESSAGE_TYPES = new Set(['DAPP_REQUEST']);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -621,7 +630,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 function isExtensionPageSender(sender?: chrome.runtime.MessageSender): boolean {
-  if (!sender) return true;
+  if (!sender) return false;
   const extensionUrl = chrome.runtime.getURL('');
   return sender.id === chrome.runtime.id
     && typeof sender.url === 'string'
@@ -754,6 +763,8 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return getWalletSnapshot();
     case 'GET_PORTFOLIO_SNAPSHOT':
       return getPortfolioSnapshot();
+    case 'REFRESH_PORTFOLIO_SNAPSHOT':
+      return refreshPortfolioSnapshot();
     case 'GET_ACCOUNTS':
       return { accounts: await getAccounts() };
     case 'GET_BALANCE':
@@ -982,6 +993,15 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return { ok: true };
     case 'GET_CONNECTED_SITES':
       return { sites: await getConnectedSites() };
+    case 'GET_PROVIDER_DISABLED_ORIGINS':
+      return { origins: await getProviderDisabledOrigins() };
+    case 'SET_PROVIDER_ORIGIN_DISABLED':
+      return {
+        origins: await setProviderOriginDisabled(
+          requireString(msg.origin, 'origin'),
+          optionalBoolean(msg.disabled) ?? false,
+        ),
+      };
     case 'ADD_CONNECTED_SITE':
       await addConnectedSite({
         origin: normalizeOrigin(requireString(msg.origin, 'origin')),
@@ -1013,7 +1033,10 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'DISCONNECT_ALL_SITES':
       await Promise.all([
         clearConnectedSites(),
+        clearProviderDisabledOrigins(),
         clearWalletConnectSessions(),
+        clearWalletConnectPairings(),
+        clearWalletConnectSdkStorage(),
         clearTonConnectSessions(),
       ]);
       return { ok: true };
@@ -1398,6 +1421,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
   const activeAccount = await getActiveAccount();
   const primaryAccount = wallet.accounts[0] ?? null;
   const locked = currentSigner === null;
+  const portfolioSnapshot = await getPortfolioSnapshot();
 
   if (!primaryAccount) {
     return {
@@ -1412,6 +1436,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce: null,
       detectedChainId: null,
       nodeInfo: null,
+      portfolioSnapshot,
     };
   }
 
@@ -1434,6 +1459,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
           detectedChainId: wallet.network.chainId,
           nodeInfo: null,
           portfolioAssets: [],
+          portfolioSnapshot,
         };
       }
       const [balance, nonce, cosmosBalances, cosmosStaking, cosmosRedelegations, cosmosValidators, cosmosGovernanceProposals, cosmosIbcContext] = await Promise.all([
@@ -1463,6 +1489,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
         nonce,
         detectedChainId: wallet.network.chainId,
         nodeInfo: null,
+        portfolioSnapshot,
         portfolioAssets: await buildPortfolioAssets({
           wallet,
           account: queryAccount,
@@ -1494,6 +1521,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce,
       detectedChainId,
       nodeInfo,
+      portfolioSnapshot,
       portfolioAssets: await buildPortfolioAssets({
         wallet,
         account: queryAccount,
@@ -1516,6 +1544,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce: null,
       detectedChainId: null,
       nodeInfo: null,
+      portfolioSnapshot,
       portfolioAssets: activeAddress
         ? [buildUnavailableNativePortfolioAsset(wallet.network, activeAddress, 'Balance unavailable')]
         : [],
@@ -1530,24 +1559,47 @@ function getSnapshotAccountMeta(account: StoredAccount): Pick<WalletSnapshot, 'a
   };
 }
 
-async function getPortfolioSnapshot(): Promise<PortfolioSnapshot> {
+async function getPortfolioSnapshot(): Promise<PortfolioSnapshot | null> {
+  const cached = await getPortfolioSnapshotCache();
+  return cached ? applyPortfolioCacheAge(cached) : null;
+}
+
+async function refreshPortfolioSnapshot(): Promise<PortfolioSnapshot> {
   const wallet = await getWalletState();
   const activeAccount = await getActiveAccount();
   const account = activeAccount ?? wallet.accounts[0] ?? null;
   if (!account) {
-    return {
+    const empty = {
       accountId: null,
       generatedAt: Date.now(),
       networks: [],
     };
+    await setPortfolioSnapshotCache(empty);
+    return empty;
   }
 
   const networks = getPortfolioNetworks(wallet);
-  const items = await Promise.all(networks.map((network) => buildPortfolioNetworkAsset(wallet, account, network)));
-  return {
+  const items = await mapWithConcurrency(networks, PORTFOLIO_REFRESH_CONCURRENCY, (network) => buildPortfolioNetworkAsset(wallet, account, network));
+  const snapshot = {
     accountId: getAccountId(account),
     generatedAt: Date.now(),
     networks: items,
+  };
+  await setPortfolioSnapshotCache(snapshot);
+  return snapshot;
+}
+
+function applyPortfolioCacheAge(snapshot: PortfolioSnapshot, now = Date.now()): PortfolioSnapshot {
+  const ageMs = now - snapshot.generatedAt;
+  if (ageMs < PORTFOLIO_STALE_AFTER_MS) return snapshot;
+  const suffix = ageMs >= PORTFOLIO_EXPIRED_AFTER_MS ? ' Refresh required.' : ' Refresh recommended.';
+  return {
+    ...snapshot,
+    networks: snapshot.networks.map((network) => ({
+      ...network,
+      status: 'stale',
+      error: network.error ?? `Cached portfolio data is stale.${suffix}`,
+    })),
   };
 }
 
@@ -1645,8 +1697,8 @@ async function buildPortfolioNetworkAsset(
 async function getNativeBalanceForNetwork(network: Network, address: string): Promise<{ balance: string; formatted: string }> {
   const nativeAdapter = getNativeChainAdapter(getChainKind(network));
   if (nativeAdapter) return nativeAdapter.getBalance(network, address);
-  const provider = buildProvider(network);
-  const balance = await provider.client.getBalance({ address: asPqAddress(address, 'getBalance') });
+  const balanceHex = await portfolioRpcRequest<string>(network.rpcUrl, 'eth_getBalance', [asPqAddress(address, 'getBalance'), 'latest'], PORTFOLIO_BALANCE_TIMEOUT_MS);
+  const balance = BigInt(balanceHex);
   return { balance: balance.toString(), formatted: formatEther(balance) };
 }
 
@@ -1664,6 +1716,42 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       },
     );
   });
+}
+
+async function portfolioRpcRequest<T>(rpcUrl: string, method: string, params: unknown[], timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`rpc request failed: ${res.status} ${res.statusText}`);
+    const data = await res.json() as { result?: T; error?: { code?: number; message?: string } };
+    if (data.error) throw new Error(`[${data.error.code ?? -32000}] ${data.error.message ?? 'RPC error'}`);
+    return data.result as T;
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') throw new Error('Balance request timed out');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function defaultNativeSymbol(chainKind: ChainKind): string {
@@ -5456,58 +5544,6 @@ async function getConnectedPermission(origin: string): Promise<ConnectedSitePerm
   const normalized = normalizeOrigin(origin);
   const sites = await getConnectedSites();
   return sites.find((site) => site.origin === normalized) ?? null;
-}
-
-// WALLET-L1: use cryptographically secure RNG for all request/approval IDs.
-function generateRequestId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function requestUserApproval(
-  input: Omit<ApprovalRequest, 'id'>,
-): Promise<boolean> {
-  const requestId = generateRequestId();
-
-  const request: ApprovalRequest = { id: requestId, ...input };
-
-  return new Promise<boolean>((resolve, reject) => {
-    pendingApprovals.set(requestId, { request, resolve });
-
-    chrome.windows.create(
-      {
-        url: chrome.runtime.getURL(`popup.html?approvalId=${encodeURIComponent(requestId)}`),
-        type: 'popup',
-        width: 420,
-        height: 680,
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          pendingApprovals.delete(requestId);
-          reject(new Error(chrome.runtime.lastError.message));
-        }
-      },
-    );
-  });
-}
-
-function getApprovalRequest(requestId: string): ApprovalRequest {
-  const pending = pendingApprovals.get(requestId);
-  if (!pending) throw new Error('Approval request not found');
-  return pending.request;
-}
-
-function resolveApprovalRequest(requestId: string, approved: boolean): { ok: true } {
-  const pending = pendingApprovals.get(requestId);
-  if (!pending) throw new Error('Approval request not found');
-  if (Date.now() - pending.request.createdAt > APPROVAL_TTL_MS) {
-    pendingApprovals.delete(requestId);
-    throw new Error('Approval request has expired');
-  }
-  pendingApprovals.delete(requestId);
-  pending.resolve(approved);
-  return { ok: true };
 }
 
 function ensureConnected(

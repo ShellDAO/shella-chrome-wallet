@@ -39,6 +39,19 @@ import type {
 import { getChainCapabilities } from './chains/capabilities.js';
 import { KNOWN_NETWORKS } from './store.js';
 
+type TrustedTypesPolicy = {
+  createHTML(input: string): unknown;
+};
+
+type TrustedTypesFactory = {
+  createPolicy(name: string, rules: { createHTML(input: string): string }): TrustedTypesPolicy;
+};
+
+const popupTrustedTypes = (globalThis as { trustedTypes?: TrustedTypesFactory }).trustedTypes;
+const popupHtmlPolicy = popupTrustedTypes?.createPolicy('shella-popup', {
+  createHTML: (input: string) => input,
+}) ?? null;
+
 type View =
   | 'loading'
   | 'welcome'
@@ -84,6 +97,7 @@ interface AppState {
   nonce: number | null;
   autoLockMinutes: number;
   connectedSites: ConnectedSitePermission[];
+  providerDisabledOrigins: string[];
   walletConnectConfig: WalletConnectConfig;
   walletConnectSessions: WalletConnectSession[];
   tonConnectSessions: TonConnectSession[];
@@ -96,6 +110,8 @@ interface AppState {
   tokenBalances: Record<string, { balance: string; formatted: string; symbol: string; decimals: number }>;
   portfolioAssets: PortfolioAsset[];
   portfolioSnapshot: PortfolioSnapshot | null;
+  portfolioRefreshing: boolean;
+  portfolioRefreshError: string;
   cosmosBalances: CosmosDenomBalance[];
   cosmosStaking: CosmosStakingPosition[];
   cosmosRedelegations: CosmosRedelegationEntry[];
@@ -355,6 +371,7 @@ const state: AppState = {
   nonce: null,
   autoLockMinutes: 15,
   connectedSites: [],
+  providerDisabledOrigins: [],
   walletConnectConfig: { projectId: '', relayUrl: '' },
   walletConnectSessions: [],
   tonConnectSessions: [],
@@ -367,6 +384,8 @@ const state: AppState = {
   tokenBalances: {},
   portfolioAssets: [],
   portfolioSnapshot: null,
+  portfolioRefreshing: false,
+  portfolioRefreshError: '',
   cosmosBalances: [],
   cosmosStaking: [],
   cosmosRedelegations: [],
@@ -429,6 +448,12 @@ function escapeHtml(value: unknown): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function setTrustedViewHtml(element: HTMLElement, markup: string): void {
+  element.innerHTML = popupHtmlPolicy
+    ? popupHtmlPolicy.createHTML(markup) as string
+    : markup;
 }
 
 function renderError(): string {
@@ -659,7 +684,7 @@ function render(): void {
   
   // Create container for view content
   const viewContainer = document.createElement('div');
-  viewContainer.innerHTML = views[state.view]?.() ?? renderLoading();
+  setTrustedViewHtml(viewContainer, views[state.view]?.() ?? renderLoading());
   appElement.appendChild(viewContainer);
   
   attachHandlers();
@@ -924,15 +949,18 @@ function renderImportPassword(): string {
   `;
 }
 
-function renderLocked(): string {
+export function renderLocked(): string {
     const accountSelectorHtml = state.accounts.length > 1
     ? `<label>Account
         <select id="unlock-account-select">
-          ${state.accounts.map(a =>
-            `<option value="${escapeHtml(a.pqAddress)}" ${a.pqAddress === state.pqAddress ? 'selected' : ''}>
-               ${escapeHtml(truncate(a.pqAddress))}
+          ${state.accounts.map((account, index) => {
+            const accountId = popupAccountId(account);
+            const label = account.displayName ?? `Account ${index + 1}`;
+            const selected = accountId === state.activeAccountId || account.pqAddress === state.pqAddress;
+            return `<option value="${escapeHtml(accountId)}" data-address="${escapeHtml(account.pqAddress)}" ${selected ? 'selected' : ''}>
+               ${escapeHtml(label)} · ${escapeHtml(truncate(account.primaryAddress ?? account.pqAddress))}
              </option>`
-          ).join('')}
+          }).join('')}
         </select>
       </label>`
     : '';
@@ -1083,10 +1111,23 @@ export function renderWallet(): string {
 
 function renderPortfolioGuard(): string {
   const snapshot = state.portfolioSnapshot;
-  if (!snapshot || snapshot.networks.length === 0) return '';
+  if (!snapshot || snapshot.networks.length === 0) {
+    return `
+      <div class="token-card portfolio-guard">
+        <div class="section-header">
+          <span class="section-header-title">Portfolio Guard</span>
+          <button class="btn-secondary btn-compact" id="btn-refresh-portfolio" ${state.portfolioRefreshing ? 'disabled' : ''}>${state.portfolioRefreshing ? 'Refreshing' : 'Refresh'}</button>
+        </div>
+        <div class="empty-panel compact-empty">Not checked yet</div>
+        ${state.portfolioRefreshError ? `<div class="status-card status-card-error">${escapeHtml(state.portfolioRefreshError)}</div>` : ''}
+      </div>
+    `;
+  }
   const available = snapshot.networks.filter((network) => network.status === 'ok').length;
   const risky = snapshot.networks.length - available;
   const generated = new Date(snapshot.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const ageMs = Math.max(0, Date.now() - snapshot.generatedAt);
+  const cacheLabel = ageMs >= 10 * 60 * 1000 ? 'expired cache' : ageMs >= 60 * 1000 ? 'stale cache' : 'fresh cache';
   const rows = snapshot.networks.map((network) => {
     const balance = network.nativeAsset?.formattedBalance ?? 'unavailable';
     const statusLabel = network.status === 'ok' ? 'OK' : network.status === 'stale' ? 'Stale' : 'Unavailable';
@@ -1112,8 +1153,10 @@ function renderPortfolioGuard(): string {
     <div class="token-card portfolio-guard">
       <div class="section-header">
         <span class="section-header-title">Portfolio Guard</span>
-        <span class="muted">${available}/${snapshot.networks.length} online · ${risky} risk · ${escapeHtml(generated)}</span>
+        <span class="muted">${available}/${snapshot.networks.length} online · ${risky} risk · ${escapeHtml(cacheLabel)} · ${escapeHtml(generated)}</span>
+        <button class="btn-secondary btn-compact" id="btn-refresh-portfolio" ${state.portfolioRefreshing ? 'disabled' : ''}>${state.portfolioRefreshing ? 'Refreshing' : 'Refresh'}</button>
       </div>
+      ${state.portfolioRefreshError ? `<div class="status-card status-card-error">${escapeHtml(state.portfolioRefreshError)}</div>` : ''}
       <div class="portfolio-network-list">
         ${rows}
       </div>
@@ -2126,22 +2169,28 @@ function renderSwitchAccount(): string {
 }
 
 function renderConnectedDappsCenter(): string {
-  const rows = getRenderedDappSessions().map((session) => `
-    <div class="site-item">
-      <div class="site-item-main">
-        <div class="site-origin">${escapeHtml(session.origin)}</div>
-        <div class="site-meta">
-          <span>${escapeHtml(session.protocol)}</span>
-          <span>${escapeHtml(session.accounts.map((account) => truncate(account, 8, 6)).join(', ') || 'No accounts')}</span>
-          <span>${escapeHtml(session.chains.join(', ') || 'No chains')}</span>
-          <span>${escapeHtml(session.methods.join(', ') || 'No methods')}</span>
-          <span>${session.expiresAt ? `Expires ${escapeHtml(formatWalletConnectExpiry(session.expiresAt))}` : `Last used ${escapeHtml(formatTimestamp(session.lastUsedAt))}`}</span>
-          ${session.riskFlags.length > 0 ? `<span class="site-risk">${escapeHtml(session.riskFlags.join(' · '))}</span>` : ''}
+  const disabledOrigins = new Set(state.providerDisabledOrigins);
+  const rows = getRenderedDappSessions().map((session) => {
+    const providerDisabled = disabledOrigins.has(session.origin);
+    return `
+      <div class="site-item">
+        <div class="site-item-main">
+          <div class="site-origin">${escapeHtml(session.origin)}</div>
+          <div class="site-meta">
+            <span>${escapeHtml(session.protocol)}</span>
+            <span>${escapeHtml(session.accounts.map((account) => truncate(account, 8, 6)).join(', ') || 'No accounts')}</span>
+            <span>${escapeHtml(session.chains.join(', ') || 'No chains')}</span>
+            <span>${escapeHtml(session.methods.join(', ') || 'No methods')}</span>
+            <span>${session.expiresAt ? `Expires ${escapeHtml(formatWalletConnectExpiry(session.expiresAt))}` : `Last used ${escapeHtml(formatTimestamp(session.lastUsedAt))}`}</span>
+            <span>${providerDisabled ? 'Provider disabled' : 'Provider enabled'}</span>
+            ${session.riskFlags.length > 0 ? `<span class="site-risk">${escapeHtml(session.riskFlags.join(' · '))}</span>` : ''}
+          </div>
         </div>
+        <button class="btn-secondary btn-provider-origin-toggle" data-origin="${escapeHtml(session.origin)}" data-disabled="${providerDisabled ? 'false' : 'true'}">${providerDisabled ? 'Enable provider' : 'Disable provider'}</button>
+        <button class="btn-secondary btn-dapp-session-revoke" data-session-id="${escapeHtml(session.id)}">Disconnect</button>
       </div>
-      <button class="btn-secondary btn-dapp-session-revoke" data-session-id="${escapeHtml(session.id)}">Disconnect</button>
-    </div>
-  `);
+    `;
+  });
   if (rows.length === 0) return '<div class="empty-panel compact-empty">No connected dApps yet</div>';
   return `
     ${rows.join('')}
@@ -3221,12 +3270,18 @@ function attachHandlers(): void {
   on('btn-unlock', 'click', async () => {
     const pwd = (document.getElementById('unlock-pwd') as HTMLInputElement)?.value;
     if (!pwd) return;
-    const selectedAddress = (document.getElementById('unlock-account-select') as HTMLSelectElement | null)?.value;
+    const accountSelect = document.getElementById('unlock-account-select') as HTMLSelectElement | null;
+    const selectedAccountId = accountSelect?.value;
+    const selectedAddress = accountSelect?.selectedOptions[0]?.dataset.address;
     state.error = '';
     state.view = 'unlocking';
     render();
     try {
-      await send('UNLOCK_WALLET', { password: pwd, ...(selectedAddress ? { address: selectedAddress } : {}) });
+      await send('UNLOCK_WALLET', {
+        password: pwd,
+        ...(selectedAccountId ? { accountId: selectedAccountId } : {}),
+        ...(selectedAddress ? { address: selectedAddress } : {}),
+      });
       await refreshWalletData();
       state.view = 'wallet';
       render();
@@ -3692,6 +3747,23 @@ function attachHandlers(): void {
       showToast('Balance refreshed');
     } catch (err) {
       showToast((err as Error).message, true);
+    }
+  });
+
+  on('btn-refresh-portfolio', 'click', async () => {
+    state.portfolioRefreshing = true;
+    state.portfolioRefreshError = '';
+    render();
+    try {
+      state.portfolioSnapshot = await send<PortfolioSnapshot>('REFRESH_PORTFOLIO_SNAPSHOT');
+      state.portfolioRefreshError = '';
+      showToast('Portfolio refreshed');
+    } catch (err) {
+      state.portfolioRefreshError = (err as Error).message;
+      showToast(state.portfolioRefreshError, true);
+    } finally {
+      state.portfolioRefreshing = false;
+      render();
     }
   });
 
@@ -4289,6 +4361,21 @@ function attachHandlers(): void {
         }
       });
     });
+    document.querySelectorAll<HTMLButtonElement>('.btn-provider-origin-toggle').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const origin = button.dataset.origin;
+        const disabled = button.dataset.disabled === 'true';
+        if (!origin) return;
+        try {
+          const result = await send<{ origins: string[] }>('SET_PROVIDER_ORIGIN_DISABLED', { origin, disabled });
+          state.providerDisabledOrigins = result.origins;
+          render();
+          showToast(disabled ? 'Provider disabled for site' : 'Provider enabled for site');
+        } catch (err) {
+          showToast((err as Error).message, true);
+        }
+      });
+    });
     document.querySelectorAll<HTMLButtonElement>('.btn-site-revoke').forEach((button) => {
       button.addEventListener('click', async () => {
         const origin = button.dataset.origin;
@@ -4346,6 +4433,7 @@ function attachHandlers(): void {
       try {
         await send('DISCONNECT_ALL_SITES');
         state.connectedSites = [];
+        state.providerDisabledOrigins = [];
         state.walletConnectSessions = [];
         state.tonConnectSessions = [];
         state.dappSessions = [];
@@ -4409,6 +4497,7 @@ async function refreshWalletData(): Promise<void> {
   state.watchedTokens = snapshot.wallet.watchedTokens ?? [];
   state.autoLockMinutes = snapshot.wallet.autoLockMinutes;
   state.connectedSites = snapshot.wallet.connectedSites;
+  state.providerDisabledOrigins = snapshot.wallet.providerDisabledOrigins ?? [];
   state.walletConnectConfig = snapshot.wallet.walletConnectConfig ?? { projectId: '', relayUrl: '' };
   state.walletConnectProjectId = state.walletConnectConfig.projectId;
   state.walletConnectRelayUrl = state.walletConnectConfig.relayUrl;
@@ -4417,7 +4506,7 @@ async function refreshWalletData(): Promise<void> {
   state.dappSessions = (await send<DappSessionsSnapshot>('GET_DAPP_SESSIONS_SNAPSHOT').catch(() => ({ sessions: [] }))).sessions;
   state.walletConnectPairings = snapshot.wallet.walletConnectPairings ?? [];
   state.portfolioAssets = snapshot.portfolioAssets ?? [];
-  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? await send<PortfolioSnapshot>('GET_PORTFOLIO_SNAPSHOT').catch(() => null);
+  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? null;
   state.bitcoinUtxoPreferences = snapshot.wallet.bitcoinUtxoPreferences ?? [];
   state.walletConnectRelayStatus = await send<WalletConnectRelayStatus>('GET_WALLETCONNECT_RELAY_STATUS').catch(() => null);
   state.detectedChainId = snapshot.detectedChainId;
@@ -4738,6 +4827,7 @@ async function boot(): Promise<void> {
   state.txQueue = snapshot.wallet.txQueue;
   state.autoLockMinutes = snapshot.wallet.autoLockMinutes;
   state.connectedSites = snapshot.wallet.connectedSites;
+  state.providerDisabledOrigins = snapshot.wallet.providerDisabledOrigins ?? [];
   state.walletConnectConfig = snapshot.wallet.walletConnectConfig ?? { projectId: '', relayUrl: '' };
   state.walletConnectProjectId = state.walletConnectConfig.projectId;
   state.walletConnectRelayUrl = state.walletConnectConfig.relayUrl;
@@ -4746,7 +4836,7 @@ async function boot(): Promise<void> {
   state.dappSessions = (await send<DappSessionsSnapshot>('GET_DAPP_SESSIONS_SNAPSHOT').catch(() => ({ sessions: [] }))).sessions;
   state.walletConnectPairings = snapshot.wallet.walletConnectPairings ?? [];
   state.portfolioAssets = snapshot.portfolioAssets ?? [];
-  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? await send<PortfolioSnapshot>('GET_PORTFOLIO_SNAPSHOT').catch(() => null);
+  state.portfolioSnapshot = snapshot.portfolioSnapshot ?? null;
   state.bitcoinUtxoPreferences = snapshot.wallet.bitcoinUtxoPreferences ?? [];
   state.walletConnectRelayStatus = await send<WalletConnectRelayStatus>('GET_WALLETCONNECT_RELAY_STATUS').catch(() => null);
   state.detectedChainId = snapshot.detectedChainId;

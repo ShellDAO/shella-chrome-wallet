@@ -279,7 +279,9 @@ export async function decryptMnemonic(
     derivedKey.fill(0);
   }
 
-  return new TextDecoder().decode(plaintext);
+  const mnemonic = new TextDecoder().decode(plaintext);
+  plaintext.fill(0);
+  return mnemonic;
 }
 
 /**

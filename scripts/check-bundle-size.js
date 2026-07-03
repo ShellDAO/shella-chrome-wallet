@@ -6,8 +6,13 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
-const bundlePath = join(root, 'dist', 'background.js');
-const maxBytes = Number(process.env.MAX_BACKGROUND_BUNDLE_BYTES ?? 1048576);
+const budgets = [
+  ['background.js', Number(process.env.MAX_BACKGROUND_BUNDLE_BYTES ?? 1048576)],
+  ['walletconnect-bridge.js', Number(process.env.MAX_WALLETCONNECT_BRIDGE_BUNDLE_BYTES ?? 1415578)],
+  ['popup.js', Number(process.env.MAX_POPUP_BUNDLE_BYTES ?? 262144)],
+  ['inpage.js', Number(process.env.MAX_INPAGE_BUNDLE_BYTES ?? 32768)],
+  ['content.js', Number(process.env.MAX_CONTENT_BUNDLE_BYTES ?? 10240)],
+];
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -15,20 +20,26 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-if (!existsSync(bundlePath)) {
-  console.error(`Missing bundle: ${bundlePath}. Run "npm run build:prod" first.`);
-  process.exit(1);
+let failed = false;
+for (const [filename, maxBytes] of budgets) {
+  const bundlePath = join(root, 'dist', filename);
+  if (!existsSync(bundlePath)) {
+    console.error(`Missing bundle: ${bundlePath}. Run "npm run build:prod" first.`);
+    failed = true;
+    continue;
+  }
+
+  const size = statSync(bundlePath).size;
+  console.log(`${filename} size: ${formatBytes(size)} (limit ${formatBytes(maxBytes)})`);
+  if (size > maxBytes) {
+    console.error(
+      `${filename} exceeds the allowed limit by ${formatBytes(size - maxBytes)}. ` +
+        'Investigate new dependencies or split non-critical code paths before merging.',
+    );
+    failed = true;
+  }
 }
 
-const size = statSync(bundlePath).size;
-console.log(`background.js size: ${formatBytes(size)} (limit ${formatBytes(maxBytes)})`);
+if (failed) process.exit(1);
 
-if (size > maxBytes) {
-  console.error(
-    `background.js exceeds the allowed limit by ${formatBytes(size - maxBytes)}. ` +
-      'Investigate new dependencies or split non-critical code paths before merging.',
-  );
-  process.exit(1);
-}
-
-console.log('✓ background.js is within the allowed production bundle budget');
+console.log('✓ extension bundles are within the allowed production budgets');

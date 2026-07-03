@@ -5,6 +5,7 @@ import { describe, test } from 'node:test';
 
 const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+const TEST_REDELEGATION_COMPLETION_TIME = '2099-07-01T00:00:00Z';
 
 function convertTestBech32Prefix(address, prefix) {
   const separator = address.lastIndexOf('1');
@@ -260,6 +261,7 @@ const listeners = {
   onStartup: [],
   onMessage: [],
   onAlarm: [],
+  onWindowRemoved: [],
 };
 let txCounter = 0;
 const createdAlarms = [];
@@ -314,9 +316,11 @@ globalThis.chrome = {
   },
   windows: {
     create(options, callback) {
-      createdWindows.push(options);
-      callback?.({ id: createdWindows.length });
+      const window = { id: createdWindows.length + 1, ...options };
+      createdWindows.push(window);
+      callback?.({ id: window.id });
     },
+    onRemoved: { addListener(fn) { listeners.onWindowRemoved.push(fn); } },
   },
   storage: {
     local: createStorageArea(),
@@ -797,17 +801,21 @@ globalThis.fetch = async (url, init) => {
   }
   if (String(url).includes('/cosmos/staking/v1beta1/delegators/') && String(url).includes('/redelegations')) {
     cosmosRequests.push({ url, kind: 'redelegations' });
+    const delegatorAddress = String(url).split('/cosmos/staking/v1beta1/delegators/')[1]?.split('/')[0] ?? '';
+    const validatorPrefix = String(url).includes('/osmosis/') ? 'osmovaloper' : 'cosmosvaloper';
+    const sourceValidatorAddress = convertTestBech32PrefixWithTweak(delegatorAddress, validatorPrefix, 1);
+    const destinationValidatorAddress = convertTestBech32PrefixWithTweak(delegatorAddress, validatorPrefix, 2);
     return new Response(
       JSON.stringify({
         redelegation_responses: [{
           redelegation: {
-            validator_src_address: 'cosmosvaloper1source00000000000000000000000000000',
-            validator_dst_address: 'cosmosvaloper1dest0000000000000000000000000000000',
+            validator_src_address: sourceValidatorAddress,
+            validator_dst_address: destinationValidatorAddress,
           },
           entries: [{
             redelegation_entry: {
               creation_height: '1234',
-              completion_time: '2026-07-01T00:00:00Z',
+              completion_time: TEST_REDELEGATION_COMPLETION_TIME,
               initial_balance: String(url).includes('/osmosis/') ? '750000' : '1500000',
             },
             balance: String(url).includes('/osmosis/') ? '750000' : '1500000',
@@ -1280,7 +1288,7 @@ function resetAlarmState() {
 
 function dispatchRuntimeMessage(message) {
   return new Promise((resolve) => {
-    listeners.onMessage[0](message, undefined, resolve);
+    listeners.onMessage[0](message, { id: 'test', url: 'chrome-extension://test/popup.html' }, resolve);
   });
 }
 
@@ -1557,6 +1565,8 @@ test('manifest permissions remain minimal', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.permissions, ['storage', 'alarms']);
   assert.deepEqual(manifest.host_permissions, ['http://*/*', 'https://*/*']);
+  assert.match(manifest.content_security_policy.extension_pages, /require-trusted-types-for 'script'/);
+  assert.match(manifest.content_security_policy.extension_pages, /trusted-types shella-popup/);
 });
 
 test('native key lifecycle clears Aptos key material with other native keys', async () => {
@@ -1709,6 +1719,70 @@ test('dapp provider supports permissions, revocation, and Shell message signing 
   assert.deepEqual(accountsAfterRevoke, []);
 });
 
+test('approval window close rejects the pending dapp request and clears the approval', async () => {
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  const approvalsBefore = createdWindows.length;
+  const requestPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://close.example',
+    method: 'eth_requestAccounts',
+    params: [],
+  });
+  for (let i = 0; i < 10 && createdWindows.length <= approvalsBefore; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(createdWindows.length > approvalsBefore, 'expected an approval window');
+  const latest = createdWindows.at(-1);
+  const requestId = new URL(latest.url).searchParams.get('approvalId');
+  assert.ok(requestId);
+
+  listeners.onWindowRemoved[0](latest.id);
+
+  await assert.rejects(requestPromise, /Request rejected by user/);
+  await assert.rejects(
+    () => handleMessage({ type: 'GET_APPROVAL_REQUEST', requestId }),
+    /Approval request not found/,
+  );
+});
+
+test('expired approval rejects the original request and cannot be resolved later', async () => {
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+
+  const approvalsBefore = createdWindows.length;
+  const requestPromise = handleMessage({
+    type: 'DAPP_REQUEST',
+    origin: 'https://expired.example',
+    method: 'eth_requestAccounts',
+    params: [],
+  });
+  for (let i = 0; i < 10 && createdWindows.length <= approvalsBefore; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const requestId = new URL(createdWindows.at(-1).url).searchParams.get('approvalId');
+  assert.ok(requestId);
+  const originalDateNow = Date.now;
+  Date.now = () => originalDateNow() + 11 * 60 * 1000;
+  try {
+    await assert.rejects(
+      () => handleMessage({ type: 'RESOLVE_APPROVAL', requestId, approved: true }),
+      /Approval request has expired/,
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  await assert.rejects(requestPromise, /Request rejected by user/);
+  await assert.rejects(
+    () => handleMessage({ type: 'RESOLVE_APPROVAL', requestId, approved: false }),
+    /Approval request not found/,
+  );
+});
+
 test('dapp sessions snapshot unifies local, WalletConnect, and TonConnect revocation', async () => {
   resetAlarmState();
   await handleMessage({ type: 'RESET_WALLET' });
@@ -1760,6 +1834,34 @@ test('dapp sessions snapshot unifies local, WalletConnect, and TonConnect revoca
   assert.equal(afterLocalRevoke.sites.some((site) => site.origin === 'https://sessions.example'), false);
 });
 
+test('provider origin disable policy is normalized and exposed through privileged messages', async () => {
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  let result = await handleMessage({
+    type: 'SET_PROVIDER_ORIGIN_DISABLED',
+    origin: 'https://dapp.example/path',
+    disabled: true,
+  });
+  assert.deepEqual(result.origins, ['https://dapp.example']);
+  assert.deepEqual((await handleMessage({ type: 'GET_PROVIDER_DISABLED_ORIGINS' })).origins, ['https://dapp.example']);
+
+  result = await handleMessage({
+    type: 'SET_PROVIDER_ORIGIN_DISABLED',
+    origin: 'https://dapp.example/other',
+    disabled: false,
+  });
+  assert.deepEqual(result.origins, []);
+
+  await assert.rejects(
+    () => handleMessage({
+      type: 'SET_PROVIDER_ORIGIN_DISABLED',
+      origin: 'chrome-extension://test/popup.html',
+      disabled: true,
+    }),
+    /valid http\(s\) URL/,
+  );
+});
+
 test('disconnect all clears dApp, WalletConnect, and TonConnect sessions without deleting wallet data', async () => {
   const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
   const password = 'hdwallet-test-password!';
@@ -1773,6 +1875,20 @@ test('disconnect all clears dApp, WalletConnect, and TonConnect sessions without
     chainIds: [424242],
     methods: ['eth_chainId'],
     expirySeconds: 60,
+  });
+  await handleMessage({
+    type: 'START_WALLETCONNECT_PAIRING',
+    uri: 'wc:wc-pairing-disconnect-all@2?relay-protocol=irn&symKey=abcdef',
+    expirySeconds: 60,
+  });
+  await chrome.storage.local.set({
+    'walletconnect:client': { topic: 'wc-disconnect-all' },
+    'walletconnect:history': ['request'],
+  });
+  await handleMessage({
+    type: 'SET_PROVIDER_ORIGIN_DISABLED',
+    origin: 'https://dapp.example/path',
+    disabled: true,
   });
   await handleMessage({
     type: 'SET_NETWORK',
@@ -1794,14 +1910,21 @@ test('disconnect all clears dApp, WalletConnect, and TonConnect sessions without
   });
 
   assert.equal((await handleMessage({ type: 'GET_CONNECTED_SITES' })).sites.length > 0, true);
+  assert.deepEqual((await handleMessage({ type: 'GET_PROVIDER_DISABLED_ORIGINS' })).origins, ['https://dapp.example']);
   assert.equal((await handleMessage({ type: 'GET_WALLETCONNECT_SESSIONS' })).sessions.length, 1);
+  assert.equal((await handleMessage({ type: 'GET_WALLETCONNECT_PAIRINGS' })).pairings.length, 1);
   assert.equal((await handleMessage({ type: 'GET_TONCONNECT_SESSIONS' })).sessions.length, 1);
 
   await handleMessage({ type: 'DISCONNECT_ALL_SITES' });
 
   assert.deepEqual((await handleMessage({ type: 'GET_CONNECTED_SITES' })).sites, []);
+  assert.deepEqual((await handleMessage({ type: 'GET_PROVIDER_DISABLED_ORIGINS' })).origins, []);
   assert.deepEqual((await handleMessage({ type: 'GET_WALLETCONNECT_SESSIONS' })).sessions, []);
+  assert.deepEqual((await handleMessage({ type: 'GET_WALLETCONNECT_PAIRINGS' })).pairings, []);
   assert.deepEqual((await handleMessage({ type: 'GET_TONCONNECT_SESSIONS' })).sessions, []);
+  const sdkStorage = await chrome.storage.local.get(['walletconnect:client', 'walletconnect:history']);
+  assert.equal(sdkStorage['walletconnect:client'], undefined);
+  assert.equal(sdkStorage['walletconnect:history'], undefined);
   const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
   assert.equal(snapshot.wallet.accounts.length, 1);
   assert.equal(snapshot.wallet.accounts[0].pqAddress, created.pqAddress);
@@ -2607,24 +2730,38 @@ test('WALLET-H2: wallet_addEthereumChain accepts https and localhost http URLs',
 });
 
 test('WALLET-M2: privileged messages from content scripts are blocked', async () => {
-  const privilegedTypes = [
-    'CREATE_WALLET',
-    'CREATE_HD_WALLET',
-    'RESTORE_HD_WALLET',
-    'REVEAL_MNEMONIC',
-    'EXPORT_KEYSTORE',
-    'SEND_TX',
-    'UNLOCK_WALLET',
-    'LOCK_WALLET',
-    'ADD_ACCOUNT',
-    'SWITCH_ACCOUNT',
-    'AUTHORIZE_SESSION_KEY',
-    'ROTATE_KEY',
-    'IMPORT_KEYSTORE',
-    'SET_NETWORK',
-    'SET_AUTO_LOCK',
-    'RESET_WALLET',
+  const backgroundSource = readFileSync(new URL('../src/background.ts', import.meta.url), 'utf8');
+  const handleMessageBody = backgroundSource.slice(
+    backgroundSource.indexOf('export async function handleMessage'),
+    backgroundSource.indexOf('async function createWallet'),
+  );
+  const handleMessageTypes = [...handleMessageBody.matchAll(/case '([^']+)'/g)].map((match) => match[1]);
+  const tokenProviderTypes = [
+    'GET_ERC20_TOKEN_INFO',
+    'GET_SPL_TOKEN_INFO',
+    'GET_TRC20_TOKEN_INFO',
+    'GET_JETTON_TOKEN_INFO',
+    'ADD_ERC20_TOKEN',
+    'ADD_SPL_TOKEN',
+    'ADD_TRC20_TOKEN',
+    'ADD_JETTON_TOKEN',
+    'REMOVE_ERC20_TOKEN',
+    'REMOVE_SPL_TOKEN',
+    'REMOVE_TRC20_TOKEN',
+    'REMOVE_JETTON_TOKEN',
+    'GET_ERC20_BALANCE',
+    'GET_SPL_BALANCE',
+    'GET_TRC20_BALANCE',
+    'GET_JETTON_BALANCE',
+    'GET_SPL_RECIPIENT_ACCOUNT_STATUS',
+    'GET_JETTON_HISTORY',
+    'SEND_ERC20_TRANSFER',
+    'SEND_SPL_TRANSFER',
+    'SEND_TRC20_TRANSFER',
+    'SEND_JETTON_TRANSFER',
   ];
+  const privilegedTypes = [...new Set([...handleMessageTypes, ...tokenProviderTypes])]
+    .filter((type) => type !== 'DAPP_REQUEST');
 
   for (const type of privilegedTypes) {
     const response = await new Promise((resolve) => {
@@ -2634,6 +2771,14 @@ test('WALLET-M2: privileged messages from content scripts are blocked', async ()
     assert.equal(response.ok, false, `${type} should be blocked from content scripts`);
     assert.equal(response.error, 'Unauthorized', `${type} should return Unauthorized`);
   }
+});
+
+test('WALLET-M2: privileged messages without sender metadata are blocked', async () => {
+  const response = await new Promise((resolve) => {
+    listeners.onMessage[0]({ type: 'GET_WALLET_SNAPSHOT' }, undefined, resolve);
+  });
+  assert.equal(response.ok, false);
+  assert.equal(response.error, 'Unauthorized');
 });
 
 test('WALLET-M2: extension pages opened in tabs can invoke internal messages', async () => {
@@ -3044,11 +3189,16 @@ describe('HD wallet', () => {
     assert.equal(snapshot.locked, false, 'HD wallet must be unlocked right after creation');
   });
 
-  test('GET_PORTFOLIO_SNAPSHOT limits default reads to active and explicitly watched networks', async () => {
+  test('portfolio snapshot cache only refreshes on explicit request and marks stale cache', async () => {
     await resetHd();
+    resetAlarmState();
     await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
 
-    const portfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    const emptyPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(emptyPortfolio, null);
+    assert.equal(rpcRequests.length, 0, 'GET_PORTFOLIO_SNAPSHOT must not perform RPC reads');
+
+    const portfolio = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
     assert.equal(portfolio.accountId, 'hd:0');
     assert.ok(portfolio.generatedAt > 0);
     assert.equal(portfolio.networks.length, 1);
@@ -3061,6 +3211,12 @@ describe('HD wallet', () => {
     assert.equal(portfolio.networks.some((network) => network.chainKind === 'bitcoin'), false);
     assert.equal(portfolio.networks.some((network) => network.chainKind === 'aptos'), false);
 
+    const rpcReadsAfterRefresh = rpcRequests.length;
+    const cachedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(cachedPortfolio.accountId, 'hd:0');
+    assert.equal(cachedPortfolio.networks.length, 1);
+    assert.equal(rpcRequests.length, rpcReadsAfterRefresh, 'cached portfolio read must not perform additional RPC reads');
+
     await chrome.storage.local.set({
       watchedTokens: [{
         chainKind: 'aptos',
@@ -3071,7 +3227,10 @@ describe('HD wallet', () => {
         addedAt: Date.now(),
       }],
     });
-    const watchedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    const stillCachedPortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(stillCachedPortfolio.networks.some((network) => network.chainKind === 'aptos'), false);
+
+    const watchedPortfolio = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
     assert.ok(watchedPortfolio.networks.some((network) =>
       network.chainKind === 'aptos' &&
       network.networkName === 'Aptos Testnet' &&
@@ -3080,8 +3239,18 @@ describe('HD wallet', () => {
     ));
     assert.equal(watchedPortfolio.networks.every((network) => typeof network.updatedAt === 'number'), true);
 
+    await chrome.storage.local.set({
+      portfolioSnapshotCache: {
+        ...watchedPortfolio,
+        generatedAt: Date.now() - 61_000,
+      },
+    });
+    const stalePortfolio = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    assert.equal(stalePortfolio.networks.every((network) => network.status === 'stale'), true);
+    assert.match(stalePortfolio.networks[0].error, /stale/i);
+
     aptosBalanceValue = 'not-a-number';
-    const degraded = await handleMessage({ type: 'GET_PORTFOLIO_SNAPSHOT' });
+    const degraded = await handleMessage({ type: 'REFRESH_PORTFOLIO_SNAPSHOT' });
     const aptos = degraded.networks.find((network) => network.chainKind === 'aptos');
     const shell = degraded.networks.find((network) => network.chainKind === 'shell');
     assert.equal(aptos.status, 'unavailable');
@@ -4682,6 +4851,8 @@ describe('HD wallet', () => {
     const snapshot = await handleMessage({ type: 'GET_WALLET_SNAPSHOT' });
     assert.equal(snapshot.activeChainKind, 'cosmos');
     assert.match(snapshot.activeAddress, /^cosmos1[ac-hj-np-z02-9]{38}$/);
+    const expectedRedelegationSource = convertTestBech32PrefixWithTweak(snapshot.activeAddress, 'cosmosvaloper', 1);
+    const expectedRedelegationDestination = convertTestBech32PrefixWithTweak(snapshot.activeAddress, 'cosmosvaloper', 2);
     assert.deepEqual(snapshot.balance, { raw: '1234567', formatted: '1.234567' });
     assert.deepEqual(snapshot.cosmosBalances, [
       { denom: 'uatom', amount: '1234567', formatted: '1.234567', symbol: 'ATOM', decimals: 6, isNative: true },
@@ -4708,10 +4879,10 @@ describe('HD wallet', () => {
       decimals: 6,
     }]);
     assert.deepEqual(snapshot.cosmosRedelegations, [{
-      sourceValidatorAddress: 'cosmosvaloper1source00000000000000000000000000000',
-      destinationValidatorAddress: 'cosmosvaloper1dest0000000000000000000000000000000',
+      sourceValidatorAddress: expectedRedelegationSource,
+      destinationValidatorAddress: expectedRedelegationDestination,
       creationHeight: '1234',
-      completionTime: '2026-07-01T00:00:00Z',
+      completionTime: TEST_REDELEGATION_COMPLETION_TIME,
       balance: '1500000',
       formatted: '1.5',
       denom: 'uatom',
@@ -4801,7 +4972,7 @@ describe('HD wallet', () => {
     assert.equal(staking.positions[0].validatorMoniker, 'Cosmos Validator');
     const redelegations = await handleMessage({ type: 'GET_COSMOS_REDELEGATIONS', address: snapshot.activeAddress });
     assert.equal(redelegations.redelegations.length, 1);
-    assert.equal(redelegations.redelegations[0].completionTime, '2026-07-01T00:00:00Z');
+    assert.equal(redelegations.redelegations[0].completionTime, TEST_REDELEGATION_COMPLETION_TIME);
     const validators = await handleMessage({ type: 'GET_COSMOS_VALIDATORS' });
     assert.equal(validators.validators[0].moniker, 'Cosmos Active');
     const proposals = await handleMessage({ type: 'GET_COSMOS_GOVERNANCE_PROPOSALS', address: snapshot.activeAddress });
@@ -4855,7 +5026,7 @@ describe('HD wallet', () => {
     await assert.rejects(
       handleMessage({
         type: 'REDELEGATE_COSMOS_STAKE',
-        sourceValidatorAddress: 'cosmosvaloper1dest0000000000000000000000000000000',
+        sourceValidatorAddress: expectedRedelegationDestination,
         destinationValidatorAddress: validatorAddress,
         amount: '0.125',
       }),
