@@ -597,6 +597,43 @@ describe('store', () => {
     assert.equal(network.rpcProvenance, 'user-custom');
   });
 
+  test('getNetwork rejects unsafe stored network primitives', async () => {
+    await chrome.storage.local.set({
+      network: {
+        name: '  ',
+        chainId: Number.NaN,
+        rpcUrl: 'javascript:alert(1)',
+        kind: 'shell',
+        symbol: '',
+      },
+    });
+
+    const network = await getNetwork();
+    assert.equal(network.name, 'Shell Devnet');
+    assert.equal(network.chainId, 424242);
+    assert.equal(network.rpcUrl, 'http://127.0.0.1:8545');
+    assert.equal(network.symbol, 'SHELL');
+    assert.equal(network.rpcProvenance, 'owned');
+  });
+
+  test('setNetwork persists normalized network values', async () => {
+    await setNetwork({
+      name: '  Custom RPC  ',
+      chainId: -1,
+      rpcUrl: ' https://rpc.example.test/path ',
+      kind: 'evm',
+      symbol: '  ETH  ',
+    });
+
+    const stored = await chrome.storage.local.get('network');
+    assert.equal(stored.network.name, 'Custom RPC');
+    assert.equal(stored.network.chainId, 424242);
+    assert.equal(stored.network.rpcUrl, 'https://rpc.example.test/path');
+    assert.equal(stored.network.kind, 'evm');
+    assert.equal(stored.network.symbol, 'ETH');
+    assert.equal(stored.network.rpcProvenance, 'user-custom');
+  });
+
   test('getNetwork preserves Solana networks and default symbol', async () => {
     await setNetwork({ name: 'Solana Devnet', chainId: 103, rpcUrl: 'https://api.devnet.solana.com', kind: 'solana' });
     const network = await getNetwork();
