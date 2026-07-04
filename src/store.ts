@@ -141,10 +141,15 @@ function normalizeConnectedSites(
 
   const sites = value.flatMap<ConnectedSitePermission>((entry) => {
     if (typeof entry === 'string') {
+      const origin = normalizeHttpOrigin(entry);
+      if (!origin) {
+        migrated = true;
+        return [];
+      }
       const now = Date.now();
       migrated = true;
       return [{
-        origin: entry,
+        origin,
         accounts: [],
         accountIds: [],
         chainId: DEFAULT_NETWORK.chainId,
@@ -153,13 +158,21 @@ function normalizeConnectedSites(
       }];
     }
 
-    if (!entry || typeof entry !== 'object') return [];
+    if (!entry || typeof entry !== 'object') {
+      migrated = true;
+      return [];
+    }
     const candidate = entry as Partial<ConnectedSitePermission>;
-    if (typeof candidate.origin !== 'string') return [];
+    const origin = normalizeHttpOrigin(candidate.origin);
+    if (!origin) {
+      migrated = true;
+      return [];
+    }
+    if (origin !== candidate.origin) migrated = true;
     const hasMissingFields =
       !Array.isArray(candidate.accounts) ||
       !Array.isArray(candidate.accountIds) ||
-      typeof candidate.chainId !== 'number' ||
+      !isSafePositiveInteger(candidate.chainId) ||
       typeof candidate.grantedAt !== 'number' ||
       typeof candidate.lastUsedAt !== 'number';
     if (hasMissingFields) migrated = true;
@@ -173,16 +186,20 @@ function normalizeConnectedSites(
     if (!Array.isArray(candidate.accountIds) && accountIds.length > 0) migrated = true;
 
     return [{
-      origin: candidate.origin,
+      origin,
       accounts: normalizedAccounts,
       accountIds,
-      chainId: typeof candidate.chainId === 'number' ? candidate.chainId : DEFAULT_NETWORK.chainId,
+      chainId: isSafePositiveInteger(candidate.chainId) ? candidate.chainId : DEFAULT_NETWORK.chainId,
       grantedAt: typeof candidate.grantedAt === 'number' ? candidate.grantedAt : Date.now(),
       lastUsedAt: typeof candidate.lastUsedAt === 'number' ? candidate.lastUsedAt : Date.now(),
     }];
   });
 
   return { sites, migrated };
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 function isStoredConnectedAccount(value: string): boolean {
@@ -583,7 +600,9 @@ export async function initStore(): Promise<void> {
   const normalizedAccounts = Array.isArray(existing.accounts)
     ? existing.accounts.map((account, index) => normalizeStoredAccount(account as StoredAccount, index))
     : [];
+  const normalizedNetwork = normalizeNetwork(existing.network);
   const accountsMigrated = JSON.stringify(normalizedAccounts) !== JSON.stringify(existing.accounts);
+  const networkMigrated = JSON.stringify(normalizedNetwork) !== JSON.stringify(existing.network);
   const { sites: connectedSites, migrated } = normalizeConnectedSites(existing.connectedSites, normalizedAccounts);
   const { tokens: watchedTokens, migrated: tokensMigrated } = normalizeWatchedTokens(existing.watchedTokens);
   const { sessions: walletConnectSessions, migrated: walletConnectSessionsMigrated } = normalizeWalletConnectSessions(existing.walletConnectSessions);
@@ -594,6 +613,7 @@ export async function initStore(): Promise<void> {
 
   if (
     !existing.network ||
+    networkMigrated ||
     existing.accountModelVersion !== ACCOUNT_MODEL_VERSION ||
     accountsMigrated ||
     existing.autoLockMinutes == null ||
@@ -621,7 +641,7 @@ export async function initStore(): Promise<void> {
     bitcoinUtxoPreferencesMigrated
   ) {
     await chrome.storage.local.set({
-      network: normalizeNetwork(existing.network),
+      network: normalizedNetwork,
       accountModelVersion: ACCOUNT_MODEL_VERSION,
       accounts: normalizedAccounts,
       autoLockMinutes: existing.autoLockMinutes ?? 15,
@@ -785,16 +805,19 @@ export async function getConnectedSites(): Promise<ConnectedSitePermission[]> {
 }
 
 export async function addConnectedSite(site: ConnectedSitePermission): Promise<void> {
+  const normalized = normalizeConnectedSites([site]).sites[0];
+  if (!normalized) throw new Error('Connected site origin must be a valid http(s) URL');
   const sites = await getConnectedSites();
-  const next = sites.filter((entry) => entry.origin !== site.origin);
-  next.push(site);
+  const next = sites.filter((entry) => entry.origin !== normalized.origin);
+  next.push(normalized);
   await chrome.storage.local.set({ connectedSites: next });
 }
 
 export async function removeConnectedSite(origin: string): Promise<void> {
+  const normalized = normalizeHttpOrigin(origin) ?? origin;
   const sites = await getConnectedSites();
   await chrome.storage.local.set({
-    connectedSites: sites.filter((site) => site.origin !== origin),
+    connectedSites: sites.filter((site) => site.origin !== normalized),
   });
 }
 

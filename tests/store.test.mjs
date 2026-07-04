@@ -289,7 +289,7 @@ describe('store', () => {
 
   test('connected sites can be added and removed', async () => {
     await addConnectedSite({
-      origin: 'https://app.shell.network',
+      origin: 'https://app.shell.network/path?q=1',
       accounts: [`0x${'aa'.repeat(32)}`],
       chainId: 424242,
       grantedAt: 1,
@@ -312,9 +312,20 @@ describe('store', () => {
     const sites = await getConnectedSites();
     assert.equal(sites.length, 2);
     assert.equal(sites.find((site) => site.origin === 'https://app.shell.network').accounts[0], `0x${'cc'.repeat(32)}`);
+    assert.equal(sites.find((site) => site.origin === 'https://dapp.example.com').chainId, 12345);
 
-    await removeConnectedSite('https://dapp.example.com');
+    await removeConnectedSite('https://dapp.example.com/any/path');
     assert.equal((await getConnectedSites()).length, 1);
+    await assert.rejects(
+      () => addConnectedSite({
+        origin: 'chrome-extension://id/page.html',
+        accounts: [],
+        chainId: 424242,
+        grantedAt: 1,
+        lastUsedAt: 1,
+      }),
+      /valid http\(s\) URL/,
+    );
   });
 
   test('provider disabled origins are normalized, deduped, and clearable', async () => {
@@ -573,20 +584,70 @@ describe('store', () => {
       network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545' },
       accounts: [],
       autoLockMinutes: 15,
-      connectedSites: ['https://legacy.example'],
+      connectedSites: [
+        'https://legacy.example/path?q=1',
+        'chrome-extension://legacy/page.html',
+        {
+          origin: 'https://legacy-object.example/path',
+          accounts: [],
+          accountIds: [],
+          chainId: Number.NaN,
+          grantedAt: 1,
+          lastUsedAt: 1,
+        },
+      ],
       txQueue: [],
     });
 
     await initStore();
     const sites = await getConnectedSites();
-    assert.equal(sites.length, 1);
+    assert.equal(sites.length, 2);
     assert.equal(sites[0].origin, 'https://legacy.example');
     assert.equal(Array.isArray(sites[0].accounts), true);
     assert.equal(typeof sites[0].grantedAt, 'number');
+    assert.equal(sites[1].origin, 'https://legacy-object.example');
+    assert.equal(sites[1].chainId, 424242);
 
     const stored = await localArea.get('connectedSites');
     assert.equal(typeof stored.connectedSites[0], 'object');
     assert.equal(stored.connectedSites[0].origin, 'https://legacy.example');
+    assert.equal(stored.connectedSites[1].origin, 'https://legacy-object.example');
+    assert.equal(stored.connectedSites[1].chainId, 424242);
+  });
+
+  test('initStore persists normalized legacy network values', async () => {
+    localArea._store.clear();
+    sessionArea._store.clear();
+    await localArea.set({
+      accountModelVersion: 2,
+      network: {
+        name: '  Legacy RPC  ',
+        chainId: Number.NaN,
+        rpcUrl: ' https://rpc.example.test ',
+        kind: 'shell',
+        symbol: '',
+      },
+      accounts: [],
+      autoLockMinutes: 15,
+      connectedSites: [],
+      walletConnectConfig: { projectId: '', relayUrl: '' },
+      walletConnectSessions: [],
+      tonConnectSessions: [],
+      walletConnectPairings: [],
+      providerDisabledOrigins: [],
+      txQueue: [],
+      watchedTokens: [],
+      bitcoinUtxoPreferences: [],
+    });
+
+    await initStore();
+    const stored = await localArea.get('network');
+    assert.equal(stored.network.name, 'Legacy RPC');
+    assert.equal(stored.network.chainId, 424242);
+    assert.equal(stored.network.rpcUrl, 'https://rpc.example.test');
+    assert.equal(stored.network.kind, 'shell');
+    assert.equal(stored.network.symbol, 'SHELL');
+    assert.equal(stored.network.rpcProvenance, 'user-custom');
   });
 
   test('getNetwork normalizes legacy networks to Shell kind', async () => {
