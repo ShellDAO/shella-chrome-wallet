@@ -731,8 +731,8 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
     case 'AUTHORIZE_SESSION_KEY':
       return authorizeSessionKey({
         password: requirePassword(msg.password),
-        sessionIndex: optionalNumber(msg.sessionIndex) ?? 0,
-        rootAccountIndex: optionalNumber(msg.rootAccountIndex) ?? 0,
+        sessionIndex: optionalNumber(msg.sessionIndex, 'sessionIndex') ?? 0,
+        rootAccountIndex: optionalNumber(msg.rootAccountIndex, 'rootAccountIndex') ?? 0,
         expiryBlock: requireNumber(msg.expiryBlock, 'expiryBlock'),
         valueCap: requireBigIntQuantity(msg.valueCap, 'valueCap'),
         target: optionalNullableString(msg.target),
@@ -841,11 +841,11 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         origin: requireString(msg.origin, 'origin'),
         chainIds: optionalNumberArray(msg.chainIds),
         methods: optionalStringArray(msg.methods),
-        expirySeconds: optionalNumber(msg.expirySeconds),
+        expirySeconds: optionalNumber(msg.expirySeconds, 'expirySeconds'),
       });
     case 'START_WALLETCONNECT_PAIRING':
       return startWalletConnectPairing(requireString(msg.uri, 'uri'), {
-        expirySeconds: optionalNumber(msg.expirySeconds),
+        expirySeconds: optionalNumber(msg.expirySeconds, 'expirySeconds'),
         useRelay: msg.useRelay === true,
         projectId: optionalString(msg.projectId),
         relayUrl: optionalString(msg.relayUrl),
@@ -877,7 +877,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         origin: requireString(msg.origin, 'origin'),
         requiredNamespaces: normalizeWalletConnectNamespaces(msg.requiredNamespaces, 'requiredNamespaces'),
         optionalNamespaces: normalizeWalletConnectNamespaces(msg.optionalNamespaces, 'optionalNamespaces'),
-        expirySeconds: optionalNumber(msg.expirySeconds),
+        expirySeconds: optionalNumber(msg.expirySeconds, 'expirySeconds'),
       });
     case 'APPROVE_WALLETCONNECT_PROPOSAL':
       return approveWalletConnectProposal({
@@ -885,7 +885,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         origin: requireString(msg.origin, 'origin'),
         requiredNamespaces: normalizeWalletConnectNamespaces(msg.requiredNamespaces, 'requiredNamespaces'),
         optionalNamespaces: normalizeWalletConnectNamespaces(msg.optionalNamespaces, 'optionalNamespaces'),
-        expirySeconds: optionalNumber(msg.expirySeconds),
+        expirySeconds: optionalNumber(msg.expirySeconds, 'expirySeconds'),
       });
     case 'GET_WALLETCONNECT_SESSIONS':
       return { sessions: await getWalletConnectSessions() };
@@ -898,7 +898,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         origin: requireString(msg.origin, 'origin'),
         manifestUrl: requireString(msg.manifestUrl, 'manifestUrl'),
         features: normalizeTonConnectFeatures(msg.features),
-        expirySeconds: optionalNumber(msg.expirySeconds),
+        expirySeconds: optionalNumber(msg.expirySeconds, 'expirySeconds'),
       });
     case 'APPROVE_TONCONNECT_PROPOSAL':
       return approveTonConnectProposal({
@@ -907,7 +907,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         manifestUrl: requireString(msg.manifestUrl, 'manifestUrl'),
         requestedItems: optionalStringArray(msg.requestedItems),
         features: normalizeTonConnectFeatures(msg.features),
-        expirySeconds: optionalNumber(msg.expirySeconds),
+        expirySeconds: optionalNumber(msg.expirySeconds, 'expirySeconds'),
       });
     case 'GET_TONCONNECT_SESSIONS':
       return { sessions: await getTonConnectSessions() };
@@ -941,7 +941,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       return previewSendTransaction({
         to: requireString(msg.to, 'to'),
         value: requireString(msg.value, 'value'),
-        feeRateSatVb: optionalNumber(msg.feeRateSatVb),
+        feeRateSatVb: optionalNumber(msg.feeRateSatVb, 'feeRateSatVb'),
         bitcoinInputs: normalizeBitcoinInputs(msg.bitcoinInputs),
       });
     case 'BUMP_BITCOIN_FEE':
@@ -959,10 +959,10 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         to: requireString(msg.to, 'to'),
         value: requireString(msg.value, 'value'),
         data: optionalString(msg.data),
-        gasLimit: optionalNumber(msg.gasLimit),
-        maxFeePerGas: optionalNumber(msg.maxFeePerGas),
-        maxPriorityFeePerGas: optionalNumber(msg.maxPriorityFeePerGas),
-        feeRateSatVb: optionalNumber(msg.feeRateSatVb),
+        gasLimit: optionalNumber(msg.gasLimit, 'gasLimit'),
+        maxFeePerGas: optionalNumber(msg.maxFeePerGas, 'maxFeePerGas'),
+        maxPriorityFeePerGas: optionalNumber(msg.maxPriorityFeePerGas, 'maxPriorityFeePerGas'),
+        feeRateSatVb: optionalNumber(msg.feeRateSatVb, 'feeRateSatVb'),
         bitcoinInputs: normalizeBitcoinInputs(msg.bitcoinInputs),
         cosmosMemo: optionalString(msg.cosmosMemo),
       });
@@ -972,7 +972,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
         spender: requireString(msg.spender, 'spender'),
       });
     case 'GET_TX_HISTORY':
-      return getTxHistory(requireString(msg.address, 'address'), optionalNumber(msg.page) ?? 0);
+      return getTxHistory(requireString(msg.address, 'address'), optionalNumber(msg.page, 'page') ?? 0);
     case 'GET_NETWORK':
       return { network: await getNetwork() };
     case 'SET_NETWORK':
@@ -4749,7 +4749,7 @@ async function handleWalletConnectEvent(event: {
       origin: requireString(params.origin ?? event.origin, 'origin'),
       requiredNamespaces: normalizeWalletConnectNamespaces(params.requiredNamespaces, 'requiredNamespaces'),
       optionalNamespaces: normalizeWalletConnectNamespaces(params.optionalNamespaces, 'optionalNamespaces'),
-      expirySeconds: optionalNumber(params.expirySeconds),
+      expirySeconds: optionalNumber(params.expirySeconds, 'expirySeconds'),
     });
   }
 
@@ -4819,7 +4819,7 @@ async function handleTokenProviderMessage(
       return adapter.getBalance({
         contractAddress: requireString(msg.contractAddress, 'contractAddress'),
         ownerAddress: optionalString(msg.ownerAddress),
-        decimals: optionalNumber(msg.decimals),
+        decimals: optionalNumber(msg.decimals, 'decimals'),
         symbol: optionalString(msg.symbol),
       });
     case 'GET_SPL_RECIPIENT_ACCOUNT_STATUS':
@@ -4834,8 +4834,8 @@ async function handleTokenProviderMessage(
       return adapter.getHistory({
         contractAddress: requireString(msg.contractAddress, 'contractAddress'),
         ownerAddress: optionalString(msg.ownerAddress),
-        page: optionalNumber(msg.page),
-        limit: optionalNumber(msg.limit),
+        page: optionalNumber(msg.page, 'page'),
+        limit: optionalNumber(msg.limit, 'limit'),
       });
     case 'SEND_ERC20_TRANSFER':
     case 'SEND_SPL_TRANSFER':
@@ -6673,8 +6673,11 @@ function requireNumber(value: unknown, field: string): number {
   return value;
 }
 
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+function optionalNumber(value: unknown, field?: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (field) throw new Error(`${field} must be a valid number`);
+  return undefined;
 }
 
 function optionalBoolean(value: unknown): boolean | undefined {
