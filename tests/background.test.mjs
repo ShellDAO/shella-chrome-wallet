@@ -6110,6 +6110,35 @@ describe('HD wallet', () => {
     assert.equal(auth2.sessionAuth.session_signature.length, 0, 'Unsigned session auth must leave session_signature empty');
   });
 
+  test('AUTHORIZE_SESSION_KEY rejects non-number optional indices', async () => {
+    await resetHd();
+    await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
+
+    await assert.rejects(
+      handleMessage({
+        type: 'AUTHORIZE_SESSION_KEY',
+        password: PASSWORD,
+        sessionIndex: '7',
+        rootAccountIndex: 0,
+        expiryBlock: 1234,
+        valueCap: '0xde0b6b3a7640000',
+        target: null,
+      }),
+      /sessionIndex must be a valid number/,
+    );
+  });
+
+  test('GET_TX_HISTORY rejects non-number page values', async () => {
+    await assert.rejects(
+      handleMessage({
+        type: 'GET_TX_HISTORY',
+        address: `0x${'11'.repeat(32)}`,
+        page: '1',
+      }),
+      /page must be a valid number/,
+    );
+  });
+
   test('REVEAL_MNEMONIC returns the original phrase after correct password', async () => {
     await resetHd();
     await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic: TEST_MNEMONIC, password: PASSWORD });
