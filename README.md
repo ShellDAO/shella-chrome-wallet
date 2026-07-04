@@ -1,6 +1,6 @@
 # shella-chrome-wallet
 
-Chrome wallet for [Shell Chain](https://github.com/LucienSong/shell-chain) — quantum-safe key management built for the era before Q-Day.
+Chrome wallet for [Shell Chain](https://github.com/ShellDAO/shell-chain) — quantum-safe key management built for the era before Q-Day.
 
 ## Features
 

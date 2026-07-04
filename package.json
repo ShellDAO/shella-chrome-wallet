@@ -47,7 +47,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LucienSong/shella-chrome-wallet.git"
+    "url": "git+https://github.com/ShellDAO/shella-chrome-wallet.git"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
