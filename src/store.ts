@@ -66,17 +66,44 @@ function inferRpcProvenance(network: Partial<Network>): NonNullable<Network['rpc
   return 'third-party-public';
 }
 
+function normalizeChainId(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : DEFAULT_NETWORK.chainId;
+}
+
+function normalizeRpcUrl(value: unknown): string {
+  if (typeof value !== 'string') return DEFAULT_NETWORK.rpcUrl;
+  const trimmed = value.trim();
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DEFAULT_NETWORK.rpcUrl;
+    }
+    return trimmed;
+  } catch {
+    return DEFAULT_NETWORK.rpcUrl;
+  }
+}
+
+function normalizeLabel(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : fallback;
+}
+
 function normalizeNetwork(value: unknown): Network {
   if (!value || typeof value !== 'object') return DEFAULT_NETWORK;
   const network = value as Partial<Network>;
   const kind = CHAIN_KINDS.has(network.kind as ChainKind) ? network.kind : 'shell';
+  const rpcUrl = normalizeRpcUrl(network.rpcUrl);
   const normalized: Network = {
-    name: typeof network.name === 'string' ? network.name : DEFAULT_NETWORK.name,
-    chainId: typeof network.chainId === 'number' ? network.chainId : DEFAULT_NETWORK.chainId,
-    rpcUrl: typeof network.rpcUrl === 'string' ? network.rpcUrl : DEFAULT_NETWORK.rpcUrl,
+    name: normalizeLabel(network.name, DEFAULT_NETWORK.name),
+    chainId: normalizeChainId(network.chainId),
+    rpcUrl,
     kind,
-    symbol: typeof network.symbol === 'string' ? network.symbol : network.kind === 'tron' ? 'TRX' : network.kind === 'solana' ? 'SOL' : network.kind === 'bitcoin' ? 'BTC' : network.kind === 'cosmos' ? 'ATOM' : network.kind === 'ton' ? 'TON' : network.kind === 'aptos' ? 'APT' : 'SHELL',
-    rpcProvenance: inferRpcProvenance({ ...network, kind }),
+    symbol: normalizeLabel(network.symbol, network.kind === 'tron' ? 'TRX' : network.kind === 'solana' ? 'SOL' : network.kind === 'bitcoin' ? 'BTC' : network.kind === 'cosmos' ? 'ATOM' : network.kind === 'ton' ? 'TON' : network.kind === 'aptos' ? 'APT' : 'SHELL'),
+    rpcProvenance: inferRpcProvenance({ ...network, kind, rpcUrl }),
   };
   if (normalized.kind === 'cosmos') {
     normalized.addressPrefix = typeof network.addressPrefix === 'string' ? network.addressPrefix : 'cosmos';
@@ -680,7 +707,7 @@ export async function getNetwork(): Promise<Network> {
 }
 
 export async function setNetwork(n: Network): Promise<void> {
-  await chrome.storage.local.set({ network: n });
+  await chrome.storage.local.set({ network: normalizeNetwork(n) });
 }
 
 export async function getTxQueue(): Promise<WalletTxRecord[]> {
