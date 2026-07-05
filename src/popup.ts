@@ -995,13 +995,22 @@ export function renderWallet(): string {
 
   // Storage profile badge (v0.18.0)
   const storageProfile = state.nodeInfo?.storage_profile;
+  const isPrunedProfile = storageProfile === 'pruned' || storageProfile === 'light';
   const storageProfileClass =
-    storageProfile === 'archive' || storageProfile === 'full' || storageProfile === 'light'
+    storageProfile === 'archive' || storageProfile === 'full' || isPrunedProfile
       ? storageProfile
       : 'unknown';
+  const storageProfileLabel =
+    storageProfile === 'archive'
+      ? 'Archive'
+      : storageProfile === 'full'
+        ? 'Full'
+        : isPrunedProfile
+          ? 'Pruned'
+          : 'Unknown';
   const storageProfileHtml = storageProfile
     ? `<span class="storage-badge storage-badge-${storageProfileClass}" title="Node storage mode">
-        ${storageProfile === 'archive' ? 'Archive' : storageProfile === 'full' ? 'Full' : 'Light'} ${escapeHtml(storageProfile)}
+        ${storageProfileLabel} ${escapeHtml(storageProfile)}
        </span>`
     : '';
   const rpcProvenanceHtml = `<span class="network-provenance" title="${escapeHtml(state.network.rpcUrl)}">${escapeHtml(formatRpcProvenance(state.network))}</span>`;
