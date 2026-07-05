@@ -478,7 +478,7 @@ export interface WalletNodeInfo {
   chain_id: string;
   block_height: number;
   peer_count: number;
-  storage_profile?: 'archive' | 'full' | 'light';
+  storage_profile?: 'archive' | 'full' | 'pruned' | 'light';
 }
 
 export interface SendTransactionParams {

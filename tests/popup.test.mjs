@@ -336,6 +336,37 @@ describe('popup', async () => {
     assert.ok(html.includes('btn-refresh-portfolio'));
   });
 
+  test('wallet main view renders canonical pruned storage profile badge', async () => {
+    const mod = await import('../dist/popup.js');
+    const { __setPopupStateForTest, renderWallet } = mod;
+    if (typeof __setPopupStateForTest !== 'function' || typeof renderWallet !== 'function') return;
+
+    __setPopupStateForTest({
+      pqAddress: '0x' + 'a'.repeat(64),
+      balanceFormatted: '1.250000',
+      detectedChainId: 424242,
+      network: { name: 'Shell Devnet', chainId: 424242, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell', symbol: 'SHELL', rpcProvenance: 'owned' },
+      accounts: [],
+      watchedTokens: [],
+      portfolioAssets: [],
+      portfolioSnapshot: null,
+      portfolioRefreshing: false,
+      portfolioRefreshError: '',
+      txQueue: [],
+      nodeInfo: {
+        version: 'ShellChain/v0.25.1/rust',
+        chain_id: '424242',
+        block_height: 4096,
+        peer_count: 4,
+        storage_profile: 'pruned',
+      },
+    });
+
+    const html = renderWallet();
+    assert.ok(html.includes('storage-badge-pruned'));
+    assert.ok(html.includes('Pruned pruned'));
+  });
+
   test('locked view uses accountId-first selector while preserving Shell PQ root label', async () => {
     const mod = await import('../dist/popup.js');
     const { __setPopupStateForTest, renderLocked } = mod;

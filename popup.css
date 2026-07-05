@@ -1260,6 +1260,7 @@ textarea {
 }
 .storage-badge-archive { background: #1a3a1a; color: #4ade80; border: 1px solid #2d6a2d; }
 .storage-badge-full    { background: #1a2a3a; color: #60a5fa; border: 1px solid #2d4a6a; }
+.storage-badge-pruned  { background: #2a2a1a; color: #facc15; border: 1px solid #5a5a1a; }
 .storage-badge-light   { background: #2a2a1a; color: #facc15; border: 1px solid #5a5a1a; }
 
 /* ── v0.18.0: AA batch & sponsored badges ── */
