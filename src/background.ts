@@ -188,6 +188,7 @@ import type {
   WalletConnectRelayStatus,
   WalletConnectSession,
   WalletNodeInfo,
+  WalletShellChainStatus,
   WalletSnapshot,
   WalletTxRecord,
   BitcoinTransferPreview,
@@ -1041,7 +1042,7 @@ export async function handleMessage(msg: { type: string; [key: string]: unknown 
       ]);
       return { ok: true };
     case 'GET_NODE_INFO':
-      return getNodeInfoFromNode((await getNetwork()).rpcUrl);
+      return getNodeInfoFromNode(buildProvider(await getNetwork()));
     case 'DAPP_REQUEST':
       return handleDappRequest({
         origin: requireString(msg.origin, 'origin'),
@@ -1501,11 +1502,12 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
     }
     const provider = buildProvider(wallet.network);
     if (!queryAddress) throw new Error('No address available for active chain');
-    const [balance, nonce, detectedChainId, nodeInfo] = await Promise.all([
+    const [balance, nonce, detectedChainId, nodeInfo, shellChainStatus] = await Promise.all([
       provider.client.getBalance({ address: asPqAddress(queryAddress, 'getBalance') }),
       provider.client.getTransactionCount({ address: asPqAddress(queryAddress, 'getTransactionCount') }),
       provider.client.getChainId(),
-      getNodeInfoFromNode(wallet.network.rpcUrl).catch(() => null),
+      getNodeInfoFromNode(provider).catch(() => null),
+      activeChainKind === 'shell' ? getShellChainStatus(provider).catch(() => null) : Promise.resolve(null),
     ]);
     return {
       locked,
@@ -1521,6 +1523,7 @@ async function getWalletSnapshot(): Promise<WalletSnapshot> {
       nonce,
       detectedChainId,
       nodeInfo,
+      shellChainStatus,
       portfolioSnapshot,
       portfolioAssets: await buildPortfolioAssets({
         wallet,
@@ -3421,19 +3424,44 @@ async function allocateNextNonce(from: string, onChainNonce: number): Promise<nu
   return next;
 }
 
-async function getNodeInfoFromNode(rpcUrl: string): Promise<WalletNodeInfo | null> {
+async function getNodeInfoFromNode(provider: ReturnType<typeof buildProvider>): Promise<WalletNodeInfo | null> {
   try {
-    const res = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'shell_getNodeInfo', params: [] }),
-    });
-    const data = await res.json() as { result?: WalletNodeInfo; error?: unknown };
-    if (data.error || !data.result) return null;
-    return data.result;
+    return await provider.getNodeInfo() as WalletNodeInfo;
   } catch {
     return null;
   }
+}
+
+async function getShellChainStatus(provider: ReturnType<typeof buildProvider>): Promise<WalletShellChainStatus> {
+  const [chainSnapshot, algorithmRegistry] = await Promise.allSettled([
+    provider.getChainSnapshot(),
+    provider.getAlgorithmRegistry(),
+  ]);
+  const errors: string[] = [];
+  const unwrap = <T>(result: PromiseSettledResult<T>, label: string): T | null => {
+    if (result.status === 'fulfilled') return result.value;
+    errors.push(`${label}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+    return null;
+  };
+  const snapshot = unwrap(chainSnapshot, 'chainSnapshot');
+  const record = (value: unknown): Record<string, unknown> | null => (
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null
+  );
+  const head = record(snapshot?.head);
+  const finalized = record(snapshot?.finalized);
+  return {
+    pendingCount: snapshot?.pendingTransactions ?? null,
+    finalityInfo: snapshot ? {
+      finalizedBlock: finalized?.number ?? null,
+      headBlock: head?.number ?? null,
+      finalityLag: snapshot.finalityLag,
+    } : null,
+    consensusInfo: record(snapshot?.consensus),
+    algorithmRegistry: (unwrap(algorithmRegistry, 'algorithmRegistry') as Array<Record<string, unknown>> | null) ?? [],
+    errors,
+  };
 }
 
 async function rpcRequest<T>(rpcUrl: string, method: string, params: unknown[]): Promise<T> {

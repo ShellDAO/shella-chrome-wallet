@@ -360,11 +360,22 @@ describe('popup', async () => {
         peer_count: 4,
         storage_profile: 'pruned',
       },
+      shellChainStatus: {
+        pendingCount: '0x1',
+        finalityInfo: { finalizedBlock: '0x100', headBlock: '0x102' },
+        consensusInfo: { engine: 'wpoa', current_proposer: '0x' + 'b'.repeat(64) },
+        algorithmRegistry: [{ algo: 'MlDsa65', status: 'active' }],
+        errors: [],
+      },
     });
 
     const html = renderWallet();
     assert.ok(html.includes('storage-badge-pruned'));
     assert.ok(html.includes('Pruned pruned'));
+    assert.ok(html.includes('Pending 0x1'));
+    assert.ok(html.includes('Finality 0x100 / 0x102'));
+    assert.ok(html.includes('Consensus wpoa'));
+    assert.ok(html.includes('MlDsa65:active'));
   });
 
   test('locked view uses accountId-first selector while preserving Shell PQ root label', async () => {

@@ -465,6 +465,7 @@ export interface WalletSnapshot {
   nonce: number | null;
   detectedChainId: number | null;
   nodeInfo?: WalletNodeInfo | null;
+  shellChainStatus?: WalletShellChainStatus | null;
   portfolioAssets?: PortfolioAsset[];
   portfolioSnapshot?: PortfolioSnapshot | null;
 }
@@ -479,6 +480,14 @@ export interface WalletNodeInfo {
   block_height: number;
   peer_count: number;
   storage_profile?: 'archive' | 'full' | 'pruned' | 'light';
+}
+
+export interface WalletShellChainStatus {
+  pendingCount?: string | null;
+  finalityInfo?: Record<string, unknown> | null;
+  consensusInfo?: Record<string, unknown> | null;
+  algorithmRegistry?: Array<Record<string, unknown>>;
+  errors: string[];
 }
 
 export interface SendTransactionParams {
