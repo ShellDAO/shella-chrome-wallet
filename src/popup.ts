@@ -31,6 +31,7 @@ import type {
   WalletConnectRelayStatus,
   WalletConnectSession,
   WalletNodeInfo,
+  WalletShellChainStatus,
   WalletSnapshot,
   WalletTxRecord,
   WatchedToken,
@@ -121,6 +122,7 @@ interface AppState {
   error: string;
   toast: string;
   nodeInfo: WalletNodeInfo | null;
+  shellChainStatus: WalletShellChainStatus | null;
   // Multi-account state
   accounts: StoredAccount[];
   activeAccountId: string;
@@ -395,6 +397,7 @@ const state: AppState = {
   error: '',
   toast: '',
   nodeInfo: null,
+  shellChainStatus: null,
   pendingKeystoreJson: '',
   pendingMnemonic: '',
   revealedMnemonic: '',
@@ -980,6 +983,47 @@ export function renderLocked(): string {
   `;
 }
 
+function recordString(record: Record<string, unknown> | null | undefined, ...keys: string[]): string | null {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function renderShellChainStatus(status: WalletShellChainStatus | null): string {
+  if (!status) return '';
+  const finality = status.finalityInfo ?? null;
+  const consensus = status.consensusInfo ?? null;
+  const finalized = recordString(finality, 'finalizedBlock', 'finalized_block', 'lastFinalized', 'last_finalized');
+  const head = recordString(finality, 'headBlock', 'head_block', 'currentHead', 'current_head');
+  const engine = recordString(consensus, 'engine') ?? 'unknown';
+  const proposer = recordString(consensus, 'current_proposer', 'currentProposer');
+  const algorithms = (status.algorithmRegistry ?? [])
+    .map((entry) => {
+      const algo = recordString(entry, 'algo') ?? 'unknown';
+      const algoStatus = recordString(entry, 'status') ?? 'unknown';
+      return `${algo}:${algoStatus}`;
+    })
+    .slice(0, 3)
+    .join(', ');
+  const errorHint = status.errors.length > 0
+    ? `<span class="node-info-item status-warn" title="${escapeHtml(status.errors.join('; '))}">Shell RPC partial</span>`
+    : '';
+  return `
+    <div class="node-info-card shell-status-card">
+      <span class="node-info-item" title="Pending Shell transactions">Pending ${escapeHtml(status.pendingCount ?? 'unknown')}</span>
+      <span class="node-info-item" title="Finalized/head blocks">Finality ${escapeHtml(finalized ?? 'unknown')} / ${escapeHtml(head ?? 'unknown')}</span>
+      <span class="node-info-item" title="Consensus engine">Consensus ${escapeHtml(engine)}</span>
+      ${proposer ? `<span class="node-info-item monospace" title="Next proposer">${escapeHtml(truncate(proposer, 8, 6))}</span>` : ''}
+      ${algorithms ? `<span class="node-info-item" title="PQ algorithm registry">${escapeHtml(algorithms)}</span>` : ''}
+      ${errorHint}
+    </div>
+  `;
+}
+
 export function renderWallet(): string {
   const pendingTxs = state.txQueue.filter((tx) => tx.status === 'pending').slice(0, 3);
   const networkWarning = getNetworkWarning();
@@ -1023,6 +1067,7 @@ export function renderWallet(): string {
         <span class="node-info-item" title="Peer count">${state.nodeInfo.peer_count} peer${state.nodeInfo.peer_count === 1 ? '' : 's'}</span>
       </div>`
     : '';
+  const shellStatusHtml = renderShellChainStatus(state.shellChainStatus);
 
   const pendingHtml = pendingTxs.length > 0
     ? `
@@ -1087,6 +1132,7 @@ export function renderWallet(): string {
           </div>
         </details>
         ${nodeInfoHtml}
+        ${shellStatusHtml}
       </div>
       <div class="action-grid ${currentChainUiMetadata().capabilities.utxo ? 'action-grid-four' : ''}">
         <button class="btn-action" id="btn-send" ${currentChainUiMetadata().capabilities.nativeTransfers ? '' : 'disabled'}>
@@ -4521,6 +4567,7 @@ async function refreshWalletData(): Promise<void> {
   state.detectedChainId = snapshot.detectedChainId;
   state.nonce = snapshot.nonce;
   state.nodeInfo = snapshot.nodeInfo ?? null;
+  state.shellChainStatus = snapshot.shellChainStatus ?? null;
   state.accounts = snapshot.wallet.accounts ?? [];
   state.activeAccountId = snapshot.activeAccountId ?? '';
   state.activeMultichainAccount = snapshot.activeMultichainAccount ?? null;
@@ -4851,6 +4898,7 @@ async function boot(): Promise<void> {
   state.detectedChainId = snapshot.detectedChainId;
   state.nonce = snapshot.nonce;
   state.nodeInfo = snapshot.nodeInfo ?? null;
+  state.shellChainStatus = snapshot.shellChainStatus ?? null;
   state.accounts = snapshot.wallet.accounts ?? [];
   state.activeAccountId = snapshot.activeAccountId ?? '';
   state.activeMultichainAccount = snapshot.activeMultichainAccount ?? null;

@@ -1228,6 +1228,37 @@ globalThis.fetch = async (url, init) => {
     eth_chainId: '0x67932',
     eth_blockNumber: '0x2a',
     eth_call: '0x' + '0'.repeat(63) + '7',
+    shell_getNodeInfo: {
+      version: 'ShellChain/v0.27.0/rust',
+      chain_id: '424242',
+      block_height: 42,
+      peer_count: 2,
+      storage_profile: 'pruned',
+    },
+    shell_getChainSnapshot: {
+      chainId: '0x67932',
+      head: { number: '0x2a' },
+      finalized: { number: '0x28' },
+      finalityLag: 2,
+      pendingTransactions: '0x1',
+      peerCount: 2,
+      isMining: true,
+      uptime: 10,
+      baseFee: '0x1',
+      gasPrice: '0x1',
+      totalTransactions: 1,
+      gasUsedTotal: '0x5208',
+      avgBlockTime: 2,
+      consensus: {
+        engine: 'wpoa',
+        current_proposer: '0x' + '3'.repeat(64),
+      },
+      validators: [],
+    },
+    shell_getAlgorithmRegistry: [
+      { algo: 'MlDsa65', status: 'active', description: 'ML-DSA-65' },
+      { algo: 'Dilithium3', status: 'deprecated', description: 'legacy compatibility' },
+    ],
     shell_getTransactionsByAddress: shellTxHistoryResult,
   };
 
@@ -1329,6 +1360,12 @@ test('create wallet -> snapshot -> export -> reset -> import', async () => {
   assert.equal(snapshot.balance.raw, '1000000000000000000');
   assert.equal(snapshot.nonce, 0);
   assert.equal(snapshot.detectedChainId, 424242);
+  assert.equal(snapshot.nodeInfo.version, 'ShellChain/v0.27.0/rust');
+  assert.equal(snapshot.shellChainStatus.pendingCount, '0x1');
+  assert.equal(snapshot.shellChainStatus.finalityInfo.finalizedBlock, '0x28');
+  assert.equal(snapshot.shellChainStatus.consensusInfo.engine, 'wpoa');
+  assert.equal(snapshot.shellChainStatus.algorithmRegistry[0].algo, 'MlDsa65');
+  assert.deepEqual(snapshot.shellChainStatus.errors, []);
 
   const exported = await handleMessage({ type: 'EXPORT_KEYSTORE' });
   assert.match(exported.keystoreJson, /"cipher":"xchacha20-poly1305"/);
