@@ -13,7 +13,7 @@ const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8');
 const requireWalletConnectQr = process.env.REQUIRE_WC_REAL_SMOKE === '1';
 
 const version = pkg.version;
-const versionHeading = new RegExp(`^## \\[${version.replace(/\./g, '\\.')}]`, 'm');
+const versionHeading = new RegExp(`^## \\[${escapeRegExp(version)}]`, 'm');
 
 if (manifest.version !== version) {
   console.error(`Version mismatch: package.json=${version}, manifest.json=${manifest.version}`);
@@ -57,6 +57,10 @@ function readArtifact(filename) {
     console.error(`Release artifact is missing or invalid at output/playwright/${filename}: ${err.message}`);
     process.exit(1);
   }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function assertTrack(artifact, { filename, releaseTrack, requiredStatus }) {
