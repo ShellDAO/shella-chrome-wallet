@@ -503,7 +503,7 @@ describe('popup', async () => {
 
     const html = renderApprovalRequest();
     assert.ok(html.includes('approval-hero'));
-    assert.ok(html.includes('https://dapp.example'));
+    assert.match(html, /https:\/\/dapp\.example/);
     assert.ok(html.includes('approval-summary-grid'));
     assert.ok(html.includes('This transaction includes contract calldata.'));
     assert.ok(html.includes('Risk medium'));
@@ -634,9 +634,9 @@ describe('popup', async () => {
     }
     assert.ok(html.includes('custom-rpc-panel'));
     assert.ok(html.includes('Relay not initialized'));
-    assert.ok(html.includes('https://dapp.example'));
-    assert.ok(html.includes('https://wc.example'));
-    assert.ok(html.includes('https://ton.example'));
+    assert.match(html, /https:\/\/dapp\.example/);
+    assert.match(html, /https:\/\/wc\.example/);
+    assert.match(html, /https:\/\/ton\.example/);
     assert.ok(html.includes('EIP-1193'));
     assert.ok(html.includes('btn-dapp-session-revoke'));
     assert.ok(html.includes('can request signing'));

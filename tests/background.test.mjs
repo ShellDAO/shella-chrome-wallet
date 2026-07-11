@@ -330,15 +330,17 @@ globalThis.chrome = {
 
 globalThis.fetch = async (url, init) => {
   const urlText = String(url);
-  const isAptosRpc = urlText.includes('fullnode.testnet.aptoslabs.com') || urlText.includes('fullnode.devnet.aptoslabs.com');
-  if (isAptosRpc && /\/v1\/?$/.test(urlText)) {
+  const parsedUrl = new URL(urlText);
+  const isAptosRpc = parsedUrl.hostname === 'fullnode.testnet.aptoslabs.com'
+    || parsedUrl.hostname === 'fullnode.devnet.aptoslabs.com';
+  if (isAptosRpc && /^\/v1\/?$/.test(parsedUrl.pathname)) {
     aptosRequests.push({ url, kind: 'ledger' });
     return new Response(
       JSON.stringify({ chain_id: aptosLedgerChainId, ledger_version: '12345' }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
   }
-  if (isAptosRpc && urlText.includes('/accounts/') && urlText.includes('CoinStore')) {
+  if (isAptosRpc && parsedUrl.pathname.includes('/accounts/') && parsedUrl.pathname.includes('CoinStore')) {
     aptosRequests.push({ url, kind: 'balance' });
     if (aptosAccountMode === 'not-found') {
       return new Response(JSON.stringify({ message: 'account not found' }), { status: 404 });
@@ -348,7 +350,7 @@ globalThis.fetch = async (url, init) => {
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
   }
-  if (isAptosRpc && urlText.includes('/accounts/')) {
+  if (isAptosRpc && parsedUrl.pathname.includes('/accounts/')) {
     aptosRequests.push({ url, kind: 'account' });
     if (aptosAccountMode === 'not-found') {
       return new Response(JSON.stringify({ message: 'account not found' }), { status: 404 });
