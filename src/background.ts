@@ -2137,7 +2137,7 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
   const signed = await currentSigner.buildSignedTransaction({
     tx,
     txHash: hashTransaction(tx),
-    includePublicKey: nonce === 0,
+    includePublicKey: await provider.getPqPubkey(from) === null,
   });
 
   const txHash = await provider.sendTransaction(signed);
@@ -3244,7 +3244,7 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
     const signed = await currentSigner.buildSignedTransaction({
       tx,
       txHash: hashTransaction(tx),
-      includePublicKey: nonce === 0,
+      includePublicKey: await provider.getPqPubkey(from) === null,
     });
     const txHash = await provider.sendTransaction(signed);
     const keystore = await createKeystore(secretKey, publicKey, password, from, 'mldsa65');
