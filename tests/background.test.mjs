@@ -1228,6 +1228,7 @@ globalThis.fetch = async (url, init) => {
     eth_chainId: '0x67932',
     eth_blockNumber: '0x2a',
     eth_call: '0x' + '0'.repeat(63) + '7',
+    shell_getPqPubkey: null,
     shell_getNodeInfo: {
       version: 'ShellChain/v0.27.0/rust',
       chain_id: '424242',
