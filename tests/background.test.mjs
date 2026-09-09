@@ -1225,6 +1225,7 @@ globalThis.fetch = async (url, init) => {
   const resultByMethod = {
     eth_getBalance: '0xde0b6b3a7640000',
     eth_getTransactionCount: '0x0',
+    eth_getTransactionReceipt: null,
     eth_chainId: '0x67932',
     eth_blockNumber: '0x2a',
     eth_call: '0x' + '0'.repeat(63) + '7',
@@ -1417,6 +1418,41 @@ test('send transaction records local pending activity', async () => {
   assert.equal(history.txs[0].source, 'local');
   assert.equal(history.txs[1].source, 'local');
   assert.deepEqual(history.txs.map((tx) => tx.nonce).sort((a, b) => a - b), [0, 1]);
+});
+
+test('Shell nonce allocation and activity stay on the selected chain', async () => {
+  txCounter = 0;
+  shellTxHistoryResult = { transactions: [], total: 0 };
+  resetAlarmState();
+  await handleMessage({ type: 'RESET_WALLET' });
+  const created = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+  const { network: firstNetwork } = await handleMessage({ type: 'GET_NETWORK' });
+  const secondNetwork = { ...firstNetwork, name: 'Second Shell network', chainId: firstNetwork.chainId + 1 };
+  const send = () => handleMessage({ type: 'SEND_TX', to: created.pqAddress, value: '0.5', data: '0x' });
+
+  const first = await send();
+  await handleMessage({ type: 'SET_NETWORK', network: secondNetwork });
+  const second = await send();
+  let queue = await getTxQueue();
+  assert.equal(queue.find((tx) => tx.txHash === second.txHash).nonce, 0);
+
+  const history = await handleMessage({ type: 'GET_TX_HISTORY', address: created.pqAddress, page: 0 });
+  assert.deepEqual(history.txs.map((tx) => tx.txHash), [second.txHash]);
+  rpcRequests.length = 0;
+  await listeners.onAlarm[0]({ name: 'shella-tx-poll' });
+  assert.deepEqual(
+    rpcRequests.filter(({ body }) => body.method === 'eth_getTransactionReceipt').map(({ body }) => body.params[0]),
+    [second.txHash],
+  );
+
+  await handleMessage({ type: 'SET_NETWORK', network: firstNetwork });
+  const third = await send();
+  queue = await getTxQueue();
+  assert.equal(queue.find((tx) => tx.txHash === third.txHash).nonce, 1);
+  assert.equal(queue.find((tx) => tx.txHash === first.txHash).chainId, firstNetwork.chainId);
+  assert.equal(queue.find((tx) => tx.txHash === second.txHash).chainId, secondNetwork.chainId);
+  assert.ok(rpcRequests.filter(({ body }) => body.method === 'eth_getTransactionCount')
+    .every(({ body }) => body.params[1] === 'pending'));
 });
 
 test('remote transaction history preserves reward metadata', async () => {

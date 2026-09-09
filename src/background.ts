@@ -233,7 +233,7 @@ interface WalletConnectBridge {
 
 // In-memory nonce tracker: prevents concurrent sendTransaction calls from
 // allocating the same nonce before the first is committed to txQueue storage.
-// Maps normalised-lowercase address → highest nonce already allocated this session.
+// Maps chain kind, chain ID and address to the highest nonce allocated this session.
 const allocatedNonces = new Map<string, number>();
 let hdAccountReservation: Promise<void> = Promise.resolve();
 
@@ -2111,8 +2111,8 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
     throw new Error('Contract deployment requires bytecode');
   }
 
-  const onChainNonce = await provider.client.getTransactionCount({ address: asPqAddress(from, 'getTransactionCount') });
-  const nonce = await allocateNextNonce(from, onChainNonce);
+  const onChainNonce = await provider.client.getTransactionCount({ address: asPqAddress(from, 'getTransactionCount'), blockTag: 'pending' });
+  const nonce = await allocateNextNonce(network, from, onChainNonce);
   const tx = to !== null && data === '0x'
     ? buildTransferTransaction({
         chainId: network.chainId,
@@ -2144,6 +2144,7 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
   await upsertTxRecord({
     txHash,
     chainKind: getChainKind(network),
+    chainId: network.chainId,
     from,
     to,
     value: valueBigInt.toString(),
@@ -3233,8 +3234,8 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
   const { publicKey, secretKey } = generateMlDsa65KeyPair();
 
   try {
-    const onChainNonce = await provider.client.getTransactionCount({ address: asPqAddress(from, 'getTransactionCount') });
-    const nonce = await allocateNextNonce(from, onChainNonce);
+    const onChainNonce = await provider.client.getTransactionCount({ address: asPqAddress(from, 'getTransactionCount'), blockTag: 'pending' });
+    const nonce = await allocateNextNonce(network, from, onChainNonce);
     const tx = buildRotateKeyTransaction({
       chainId: network.chainId,
       nonce,
@@ -3257,6 +3258,7 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
     await upsertTxRecord({
       txHash,
       chainKind: getChainKind(network),
+      chainId: network.chainId,
       from,
       to: tx.to ?? from,
       value: '0',
@@ -3281,6 +3283,7 @@ async function getTxHistory(
 ): Promise<{ txs: WalletTxRecord[]; total: number }> {
   const network = await getNetwork();
   const localTxs = (await getTxQueue()).filter((tx) => {
+    if (tx.chainId !== undefined && tx.chainId !== network.chainId) return false;
     return tx.from.toLowerCase() === address.toLowerCase() || tx.to?.toLowerCase() === address.toLowerCase();
   });
 
@@ -3334,6 +3337,7 @@ async function pollPendingTransactions(): Promise<void> {
     if (tx.status !== 'pending') return tx;
     const txChainKind = tx.chainKind ?? 'shell';
     if (txChainKind !== chainKind) return tx;
+    if (tx.chainId !== undefined && tx.chainId !== network.chainId) return tx;
     try {
       const txNativeAdapter = getNativeChainAdapter(txChainKind);
       if (txNativeAdapter) {
@@ -3406,11 +3410,16 @@ async function applyPendingKeyRotations(txQueue: WalletTxRecord[]): Promise<void
   }
 }
 
-async function allocateNextNonce(from: string, onChainNonce: number): Promise<number> {
-  const key = from.toLowerCase();
+async function allocateNextNonce(network: Network, from: string, onChainNonce: number): Promise<number> {
+  const address = from.toLowerCase();
+  const chainKind = getChainKind(network);
+  const key = `${chainKind}:${network.chainId}:${address}`;
   const txQueue = await getTxQueue();
+  // Legacy records have no chain identity; the node's pending nonce accounts
+  // for their transactions without assigning them to an unrelated network.
   const pendingNonces = txQueue
-    .filter((tx) => tx.status === 'pending' && tx.from.toLowerCase() === key)
+    .filter((tx) => tx.status === 'pending' && tx.from.toLowerCase() === address
+      && (tx.chainKind ?? 'shell') === chainKind && tx.chainId === network.chainId)
     .map((tx) => tx.nonce)
     .filter((nonce): nonce is number => nonce != null)
     .sort((a, b) => b - a);

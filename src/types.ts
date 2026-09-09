@@ -342,6 +342,8 @@ export type WalletTxStatus = 'pending' | 'confirmed' | 'failed';
 export interface WalletTxRecord {
   txHash: string;
   chainKind?: ChainKind;
+  /** Signing chain ID; absent on records saved by older wallet versions. */
+  chainId?: number;
   from: string;
   to: string | null;
   value: string;
