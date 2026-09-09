@@ -134,7 +134,7 @@ try {
   artifact.chainId = chainId;
 
   const txApprovalPagePromise = context.waitForEvent('page', { timeout: 45000 });
-  const txRejection = dappClient.request({
+  const txResultPromise = Promise.allSettled([dappClient.request({
     topic: session.topic,
     chainId: 'eip155:424242',
     request: {
@@ -146,21 +146,16 @@ try {
         data: '0x',
       }],
     },
-  });
+  })]);
   const txApprovalPage = await txApprovalPagePromise;
   await txApprovalPage.waitForSelector('#btn-approval-reject', { timeout: 45000 });
   const txApprovalText = await txApprovalPage.locator('body').innerText();
   assert.match(txApprovalText, /send-transaction/);
   await txApprovalPage.click('#btn-approval-reject');
-  await txRejection.then(
-    () => {
-      throw new Error('eth_sendTransaction unexpectedly resolved after rejection');
-    },
-    (err) => {
-      assert.match(err.message, /rejected|Request rejected by user/i);
-      artifact.txRejection = err.message;
-    },
-  );
+  const [txResult] = await txResultPromise;
+  assert.equal(txResult.status, 'rejected', 'eth_sendTransaction unexpectedly resolved after rejection');
+  assert.match(txResult.reason.message, /rejected|Request rejected by user/i);
+  artifact.txRejection = txResult.reason.message;
 
   await dappClient.disconnect({
     topic: session.topic,

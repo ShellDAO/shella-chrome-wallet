@@ -125,13 +125,13 @@ try {
   artifact.restored = true;
 
   const txApprovalPromise = context.waitForEvent('page', { timeout: 45000 });
-  const txPromise = dappPage.evaluate(async (account) => window.ton.tonconnect.send({
+  const txResultPromise = Promise.allSettled([dappPage.evaluate(async (account) => window.ton.tonconnect.send({
     method: 'sendTransaction',
     params: [{
       valid_until: Math.floor(Date.now() / 1000) + 120,
       messages: [{ address: account, amount: '100000000' }],
     }],
-  }), connected.account);
+  }), connected.account)]);
   const txApproval = await txApprovalPromise;
   await txApproval.waitForSelector('#btn-approval-reject', { timeout: 45000 });
   await openApprovalDetails(txApproval);
@@ -139,15 +139,10 @@ try {
   assert.match(txText, /tonconnect-request/);
   assert.match(txText, /100000000/);
   await txApproval.click('#btn-approval-reject');
-  await txPromise.then(
-    () => {
-      throw new Error('TonConnect sendTransaction unexpectedly resolved after rejection');
-    },
-    (err) => {
-      assert.match(err.message, /rejected|Request rejected by user/i);
-      artifact.txRejected = true;
-    },
-  );
+  const [txResult] = await txResultPromise;
+  assert.equal(txResult.status, 'rejected', 'TonConnect sendTransaction unexpectedly resolved after rejection');
+  assert.match(txResult.reason.message, /rejected|Request rejected by user/i);
+  artifact.txRejected = true;
 
   await removeTonConnectSession(popupPage, 'ton-smoke-client');
   const afterDisconnect = await dappPage.evaluate(async () => window.ton.tonconnect.restoreConnection());
