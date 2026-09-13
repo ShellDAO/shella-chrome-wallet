@@ -2098,11 +2098,11 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
   if (!signer) throw new Error('Wallet is locked');
 
   const network = await getNetwork();
-  const nativeAdapter = getNativeChainAdapter(getChainKind(network));
-  if (nativeAdapter) return nativeAdapter.send(network, params);
   if (params.expectedChainId !== undefined && params.expectedChainId !== network.chainId) {
     throw new Error(`Network changed during approval: expected ${params.expectedChainId}, got ${network.chainId}`);
   }
+  const nativeAdapter = getNativeChainAdapter(getChainKind(network));
+  if (nativeAdapter) return nativeAdapter.send(network, params);
   const provider = buildProvider(network);
   const from = signer.getAddress();
   const to = params.to === null ? null : normalizeRecipient(params.to);
