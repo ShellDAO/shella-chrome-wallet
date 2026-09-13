@@ -1795,6 +1795,53 @@ test('dapp provider supports permissions, revocation, and Shell message signing 
   assert.deepEqual(accountsAfterRevoke, []);
 });
 
+for (const method of ['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction']) {
+  for (const change of ['account switch', 'lock and unlock']) {
+    test(`${method} rejects ${change} while signing approval is pending`, async () => {
+      txCounter = 0;
+      resetAlarmState();
+      await handleMessage({ type: 'RESET_WALLET' });
+      const first = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+      const second = change === 'account switch'
+        ? await handleMessage({ type: 'ADD_ACCOUNT', password: 'different horse battery' })
+        : first;
+      const origin = 'https://pending-signature.example';
+      const beforeConnect = createdWindows.length;
+      const connect = handleMessage({ type: 'DAPP_REQUEST', origin, method: 'eth_requestAccounts', params: [] });
+      await resolveLatestApproval(true, beforeConnect);
+      assert.deepEqual(await connect, [first.pqAddress]);
+
+      const beforeSign = createdWindows.length;
+      const params = method === 'personal_sign'
+        ? ['Shell login challenge', first.pqAddress]
+        : method === 'eth_sendTransaction'
+          ? [{ from: first.pqAddress, to: first.pqAddress, value: '0x1' }]
+          : [first.pqAddress, JSON.stringify({ domain: { name: 'Shell dApp', chainId: 424242 }, primaryType: 'Message', types: { Message: [{ name: 'text', type: 'string' }] }, message: { text: 'Sign with the approved account' } })];
+      const pending = handleMessage({ type: 'DAPP_REQUEST', origin, method, params })
+        .then((value) => ({ value }), (error) => ({ error }));
+      for (let i = 0; i < 10 && createdWindows.length <= beforeSign; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      assert.ok(createdWindows.length > beforeSign, 'expected a pending signing approval');
+
+      if (change === 'account switch') {
+        await handleMessage({ type: 'SWITCH_ACCOUNT', password: 'different horse battery', address: second.pqAddress });
+      } else {
+        await handleMessage({ type: 'LOCK_WALLET' });
+        await handleMessage({ type: 'UNLOCK_WALLET', password: 'correct horse battery' });
+      }
+      const approval = await resolveLatestApproval(true, beforeSign);
+      assert.equal(approval.payload.account, first.pqAddress);
+      const result = await pending;
+      assert.equal(txCounter, 0, 'stale approval must not broadcast a transaction');
+      assert.match(result.error?.message ?? '', /Wallet changed while awaiting approval/);
+      assert.equal(toSafeErrorMessage(result.error), result.error.message);
+      assert.equal(result.value, undefined, 'stale approval must not return a signing result');
+      assert.equal((await handleMessage({ type: 'GET_WALLET_SNAPSHOT' })).activeAddress, second.pqAddress);
+    });
+  }
+}
+
 test('approval window close rejects the pending dapp request and clears the approval', async () => {
   resetAlarmState();
   await handleMessage({ type: 'RESET_WALLET' });
