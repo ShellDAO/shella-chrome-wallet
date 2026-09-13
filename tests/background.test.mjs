@@ -1842,6 +1842,44 @@ for (const method of ['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransact
   }
 }
 
+for (const network of [
+  { name: 'Shell Local', chainId: 1337, rpcUrl: 'http://127.0.0.1:8545', kind: 'shell' },
+  { name: 'Aptos Testnet', chainId: 2, rpcUrl: 'https://fullnode.testnet.aptoslabs.com/v1', kind: 'aptos', symbol: 'APT' },
+]) {
+  test(`Shell transaction approval rejects a network switch to ${network.kind} before dispatch`, async () => {
+    resetAlarmState();
+    txCounter = 0;
+    await handleMessage({ type: 'RESET_WALLET' });
+    const { mnemonic } = await handleMessage({ type: 'GENERATE_MNEMONIC' });
+    const account = await handleMessage({ type: 'CREATE_HD_WALLET', mnemonic, password: 'network-approval-test' });
+    const { network: approvedNetwork } = await handleMessage({ type: 'GET_NETWORK' });
+    const origin = 'https://pending-network.example';
+    const beforeConnect = createdWindows.length;
+    const connect = handleMessage({ type: 'DAPP_REQUEST', origin, method: 'eth_requestAccounts', params: [] });
+    await resolveLatestApproval(true, beforeConnect);
+    assert.deepEqual(await connect, [account.pqAddress]);
+
+    const beforeSend = createdWindows.length;
+    const pending = handleMessage({
+      type: 'DAPP_REQUEST', origin, method: 'eth_sendTransaction',
+      params: [{ from: account.pqAddress, to: account.pqAddress, value: '1' }],
+    }).then((value) => ({ value }), (error) => ({ error }));
+    for (let i = 0; i < 10 && createdWindows.length <= beforeSend; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.ok(createdWindows.length > beforeSend, 'expected a pending transaction approval');
+    await handleMessage({ type: 'SET_NETWORK', network });
+    const approval = await resolveLatestApproval(true, beforeSend);
+    assert.equal(approval.payload.chainId, approvedNetwork.chainId);
+    assert.equal(approval.payload.value, '1');
+    const result = await pending;
+    assert.equal(aptosRequests.some((entry) => entry.kind === 'broadcast'), false, 'Shell approval must not broadcast an Aptos transaction');
+    assert.equal(txCounter, 0, 'stale network approval must not broadcast a Shell transaction');
+    assert.match(result.error?.message ?? '', /Network changed during approval/);
+    assert.equal(result.value, undefined);
+  });
+}
+
 test('approval window close rejects the pending dapp request and clears the approval', async () => {
   resetAlarmState();
   await handleMessage({ type: 'RESET_WALLET' });
