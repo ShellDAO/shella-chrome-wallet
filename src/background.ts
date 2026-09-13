@@ -3236,6 +3236,7 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
   const { publicKey, secretKey } = generateMlDsa65KeyPair();
 
   try {
+    const keystore = await createKeystore(secretKey, publicKey, password, from, 'mldsa65');
     const onChainNonce = await provider.client.getTransactionCount({ address: asPqAddress(from, 'getTransactionCount'), blockTag: 'pending' });
     const nonce = await allocateNextNonce(network, from, onChainNonce);
     const tx = buildRotateKeyTransaction({
@@ -3250,7 +3251,6 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
       includePublicKey: await provider.getPqPubkey(from) === null,
     });
     const txHash = await provider.sendTransaction(signed);
-    const keystore = await createKeystore(secretKey, publicKey, password, from, 'mldsa65');
     await addPendingKeyRotation({
       txHash,
       pqAddress: from,
