@@ -2094,7 +2094,8 @@ async function getCosmosIbcContextForActiveNetwork(address: string): Promise<Awa
 }
 
 async function sendTransaction(params: SendTransactionParams): Promise<{ txHash: string }> {
-  if (!currentSigner) throw new Error('Wallet is locked');
+  const signer = currentSigner;
+  if (!signer) throw new Error('Wallet is locked');
 
   const network = await getNetwork();
   const nativeAdapter = getNativeChainAdapter(getChainKind(network));
@@ -2103,7 +2104,7 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
     throw new Error(`Network changed during approval: expected ${params.expectedChainId}, got ${network.chainId}`);
   }
   const provider = buildProvider(network);
-  const from = currentSigner.getAddress();
+  const from = signer.getAddress();
   const to = params.to === null ? null : normalizeRecipient(params.to);
   const valueBigInt = parseEtherValue(params.value);
   const data = normalizeData(params.data);
@@ -2134,7 +2135,7 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
         maxPriorityFeePerGas: params.maxPriorityFeePerGas,
       });
 
-  const signed = await currentSigner.buildSignedTransaction({
+  const signed = await signer.buildSignedTransaction({
     tx,
     txHash: hashTransaction(tx),
     includePublicKey: await provider.getPqPubkey(from) === null,
@@ -3226,11 +3227,12 @@ async function sendJettonTokenTransfer(input: {
 }
 
 async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAddress: string }> {
-  if (!currentSigner) throw new Error('Wallet is locked');
+  const signer = currentSigner;
+  if (!signer) throw new Error('Wallet is locked');
 
   const network = await getNetwork();
   const provider = buildProvider(network);
-  const from = currentSigner.getAddress();
+  const from = signer.getAddress();
   const { publicKey, secretKey } = generateMlDsa65KeyPair();
 
   try {
@@ -3242,7 +3244,7 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
       publicKey,
       algorithmId: 1,
     });
-    const signed = await currentSigner.buildSignedTransaction({
+    const signed = await signer.buildSignedTransaction({
       tx,
       txHash: hashTransaction(tx),
       includePublicKey: await provider.getPqPubkey(from) === null,

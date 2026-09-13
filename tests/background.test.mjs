@@ -2596,6 +2596,46 @@ test('Shell dApp provider can submit ERC20 transfers through token provider regi
   await assert.rejects(approvalPromise, /Request rejected by user/);
 });
 
+for (const operation of ['SEND_TX', 'ROTATE_KEY']) {
+  test(`${operation} rejects an account switch while nonce lookup is pending`, async () => {
+    txCounter = 0;
+    resetAlarmState();
+    await handleMessage({ type: 'RESET_WALLET' });
+    const first = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
+    const second = await handleMessage({ type: 'ADD_ACCOUNT', password: 'different horse battery' });
+    const originalFetch = globalThis.fetch;
+    let releaseNonce;
+    let nonceStarted;
+    const pendingNonce = new Promise((resolve) => { releaseNonce = resolve; });
+    const started = new Promise((resolve) => { nonceStarted = resolve; });
+    globalThis.fetch = async (url, init) => {
+      const request = typeof url === 'object' && 'text' in url
+        ? JSON.parse(await url.clone().text())
+        : JSON.parse(init.body);
+      if (request.method === 'eth_getTransactionCount') {
+        nonceStarted();
+        await pendingNonce;
+      }
+      return originalFetch(url, init);
+    };
+    try {
+      const resultPromise = handleMessage(operation === 'SEND_TX'
+        ? { type: operation, to: first.pqAddress, value: '0.1', data: '0x' }
+        : { type: operation, password: 'correct horse battery' })
+        .then((value) => ({ value }), (error) => ({ error }));
+      await started;
+      await handleMessage({ type: 'SWITCH_ACCOUNT', password: 'different horse battery', address: second.pqAddress });
+      releaseNonce();
+      const result = await resultPromise;
+      assert.match(result.error?.message ?? '', /signer has been disposed/);
+      assert.equal(txCounter, 0, 'the replacement account must not broadcast the pending transaction');
+    } finally {
+      releaseNonce();
+      globalThis.fetch = originalFetch;
+    }
+  });
+}
+
 test('Shell dApp permissions are bound to the currently active account after account switch', async () => {
   txCounter = 0;
   shellTxHistoryResult = { transactions: [], total: 0 };
