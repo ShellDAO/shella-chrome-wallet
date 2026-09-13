@@ -1795,9 +1795,10 @@ test('dapp provider supports permissions, revocation, and Shell message signing 
   assert.deepEqual(accountsAfterRevoke, []);
 });
 
-for (const method of ['personal_sign', 'eth_signTypedData_v4']) {
+for (const method of ['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction']) {
   for (const change of ['account switch', 'lock and unlock']) {
     test(`${method} rejects ${change} while signing approval is pending`, async () => {
+      txCounter = 0;
       resetAlarmState();
       await handleMessage({ type: 'RESET_WALLET' });
       const first = await handleMessage({ type: 'CREATE_WALLET', password: 'correct horse battery' });
@@ -1813,7 +1814,9 @@ for (const method of ['personal_sign', 'eth_signTypedData_v4']) {
       const beforeSign = createdWindows.length;
       const params = method === 'personal_sign'
         ? ['Shell login challenge', first.pqAddress]
-        : [first.pqAddress, JSON.stringify({ domain: { name: 'Shell dApp', chainId: 424242 }, primaryType: 'Message', types: { Message: [{ name: 'text', type: 'string' }] }, message: { text: 'Sign with the approved account' } })];
+        : method === 'eth_sendTransaction'
+          ? [{ from: first.pqAddress, to: first.pqAddress, value: '0x1' }]
+          : [first.pqAddress, JSON.stringify({ domain: { name: 'Shell dApp', chainId: 424242 }, primaryType: 'Message', types: { Message: [{ name: 'text', type: 'string' }] }, message: { text: 'Sign with the approved account' } })];
       const pending = handleMessage({ type: 'DAPP_REQUEST', origin, method, params })
         .then((value) => ({ value }), (error) => ({ error }));
       for (let i = 0; i < 10 && createdWindows.length <= beforeSign; i++) {
@@ -1830,9 +1833,10 @@ for (const method of ['personal_sign', 'eth_signTypedData_v4']) {
       const approval = await resolveLatestApproval(true, beforeSign);
       assert.equal(approval.payload.account, first.pqAddress);
       const result = await pending;
+      assert.equal(txCounter, 0, 'stale approval must not broadcast a transaction');
       assert.match(result.error?.message ?? '', /Wallet changed while awaiting approval/);
       assert.equal(toSafeErrorMessage(result.error), result.error.message);
-      assert.equal(result.value, undefined, 'stale approval must not return a signature');
+      assert.equal(result.value, undefined, 'stale approval must not return a signing result');
       assert.equal((await handleMessage({ type: 'GET_WALLET_SNAPSHOT' })).activeAddress, second.pqAddress);
     });
   }

@@ -5122,8 +5122,12 @@ function decodeHexMessagePreview(message: string): string {
   return /^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) ? text : `${bytes.length} bytes`;
 }
 
-async function signShellDappPayload(signer: ShellSigner, method: string, payload: unknown): Promise<string> {
+function assertApprovalSigner(signer: ShellSigner): void {
   if (currentSigner !== signer) throw new Error('Wallet changed while awaiting approval. Please retry.');
+}
+
+async function signShellDappPayload(signer: ShellSigner, method: string, payload: unknown): Promise<string> {
+  assertApprovalSigner(signer);
   const encoded = new TextEncoder().encode(`shella:${method}:${stableJsonStringify(payload)}`);
   const digest = sha256(encoded);
   const signature = await signer.sign(digest);
@@ -5224,7 +5228,8 @@ async function handleShellDappRequest(
     }
     case 'eth_sendTransaction': {
       const activeConnectedAccount = requireConnectedActiveAccount(permission, origin, activeAccount, getChainKind(network));
-      if (!currentSigner) throw new Error('Wallet is locked');
+      const signer = currentSigner;
+      if (!signer) throw new Error('Wallet is locked');
       const [tx] = normalizeArrayParams(message.params);
       if (!tx || typeof tx !== 'object') throw new Error('eth_sendTransaction requires a transaction object');
       const candidate = tx as Record<string, unknown>;
@@ -5262,6 +5267,7 @@ async function handleShellDappRequest(
         },
       });
       if (!approved) throw new Error('Request rejected by user');
+      assertApprovalSigner(signer);
       return sendTransaction({ ...request, expectedChainId: network.chainId });
     }
     case 'personal_sign': {
