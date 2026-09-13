@@ -5122,11 +5122,11 @@ function decodeHexMessagePreview(message: string): string {
   return /^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) ? text : `${bytes.length} bytes`;
 }
 
-async function signShellDappPayload(method: string, payload: unknown): Promise<string> {
-  if (!currentSigner) throw new Error('Wallet is locked');
+async function signShellDappPayload(signer: ShellSigner, method: string, payload: unknown): Promise<string> {
+  if (currentSigner !== signer) throw new Error('Wallet changed while awaiting approval. Please retry.');
   const encoded = new TextEncoder().encode(`shella:${method}:${stableJsonStringify(payload)}`);
   const digest = sha256(encoded);
-  const signature = await currentSigner.sign(digest);
+  const signature = await signer.sign(digest);
   return `0x${bytesToHex(signature)}`;
 }
 
@@ -5266,7 +5266,8 @@ async function handleShellDappRequest(
     }
     case 'personal_sign': {
       const activeConnectedAccount = requireConnectedActiveAccount(permission, origin, activeAccount, getChainKind(network));
-      if (!currentSigner) throw new Error('Wallet is locked');
+      const signer = currentSigner;
+      if (!signer) throw new Error('Wallet is locked');
       const request = normalizePersonalSignRequest(message.params, activeConnectedAccount);
       const approved = await requestUserApproval({
         kind: 'sign-message',
@@ -5288,11 +5289,12 @@ async function handleShellDappRequest(
         },
       });
       if (!approved) throw new Error('Request rejected by user');
-      return signShellDappPayload('personal_sign', { origin, account: activeConnectedAccount, chainId: network.chainId, message: request.message });
+      return signShellDappPayload(signer, 'personal_sign', { origin, account: activeConnectedAccount, chainId: network.chainId, message: request.message });
     }
     case 'eth_signTypedData_v4': {
       const activeConnectedAccount = requireConnectedActiveAccount(permission, origin, activeAccount, getChainKind(network));
-      if (!currentSigner) throw new Error('Wallet is locked');
+      const signer = currentSigner;
+      if (!signer) throw new Error('Wallet is locked');
       const request = normalizeTypedDataSignRequest(message.params, activeConnectedAccount);
       const typedDataSummary = summarizeTypedDataForApproval(request.typedData);
       const approved = await requestUserApproval({
@@ -5315,7 +5317,7 @@ async function handleShellDappRequest(
         },
       });
       if (!approved) throw new Error('Request rejected by user');
-      return signShellDappPayload('eth_signTypedData_v4', { origin, account: activeConnectedAccount, chainId: network.chainId, typedData: request.typedData });
+      return signShellDappPayload(signer, 'eth_signTypedData_v4', { origin, account: activeConnectedAccount, chainId: network.chainId, typedData: request.typedData });
     }
     case 'eth_call': {
       const [tx] = normalizeArrayParams(message.params);
@@ -6947,6 +6949,7 @@ export function toSafeErrorMessage(err: unknown): string {
     message === 'No wallet found' ||
     message === 'No wallet to export' ||
     message === 'Wallet is locked' ||
+    message === 'Wallet changed while awaiting approval. Please retry.' ||
     message === 'Tron key is not available for this account' ||
     message === 'No Tron address is available for this account' ||
     message === 'Solana key is not available for this account' ||
