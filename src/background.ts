@@ -8,7 +8,7 @@
 import { MlDsa65Adapter, generateMlDsa65KeyPair } from 'shell-sdk/adapters';
 import { createShellProvider } from 'shell-sdk/provider';
 import { ShellSigner } from 'shell-sdk/signer';
-import { buildRotateKeyTransaction, buildTransaction, buildTransferTransaction, hashTransaction } from 'shell-sdk/transactions';
+import { buildRotateKeyTransaction, buildTransaction, buildTransferTransaction } from 'shell-sdk/transactions';
 import { createSessionAuth, finalizeSessionAuth } from 'shell-sdk/session';
 import type { SessionAuth, ShellEncryptedKey } from 'shell-sdk/types';
 import { deriveAccount, deriveSessionKey, generateMnemonic, mnemonicToSeed, validateHdMnemonic } from 'shell-sdk/hdwallet';
@@ -2137,7 +2137,6 @@ async function sendTransaction(params: SendTransactionParams): Promise<{ txHash:
 
   const signed = await signer.buildSignedTransaction({
     tx,
-    txHash: hashTransaction(tx),
     includePublicKey: await provider.getPqPubkey(from) === null,
   });
 
@@ -3247,7 +3246,6 @@ async function rotateActiveKey(password: string): Promise<{ txHash: string; pqAd
     });
     const signed = await signer.buildSignedTransaction({
       tx,
-      txHash: hashTransaction(tx),
       includePublicKey: await provider.getPqPubkey(from) === null,
     });
     const txHash = await provider.sendTransaction(signed);

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
+import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
+import { blake3 } from '@noble/hashes/blake3.js';
+import { hashTransaction } from 'shell-sdk/transactions';
 
 const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
@@ -1266,7 +1269,14 @@ globalThis.fetch = async (url, init) => {
 
   if (body.method === 'shell_sendTransaction') {
     txCounter += 1;
-    resultByMethod.shell_sendTransaction = `0x${txCounter.toString(16).padStart(64, '0')}`;
+    const signed = body.params[0];
+    const signingHash = hashTransaction(signed.tx, signed.signature.sig_type);
+    assert.ok(ml_dsa65.verify(
+      new Uint8Array(signed.signature.data), signingHash, new Uint8Array(signed.sender_pubkey),
+    ), 'Shell transaction signature must verify under its declared algorithm domain');
+    resultByMethod.shell_sendTransaction = '0x' + Buffer.from(blake3(Buffer.concat([
+      Buffer.from('PQTX_IDENTITY_V1'), Buffer.from(signed.from.slice(2), 'hex'), signingHash,
+    ]))).toString('hex');
   }
 
   if (!(body.method in resultByMethod)) {
